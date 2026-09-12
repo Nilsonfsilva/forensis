@@ -1,0 +1,21 @@
+[package]
+name = "forensis-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Forensis command line interface."
+publish = false
+
+[[bin]]
+name = "forensis"
+path = "src/main.rs"
+
+[dependencies]
+forensis-app = { path = "../forensis-app" }
+
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true

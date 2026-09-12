@@ -1,0 +1,55 @@
+[workspace]
+
+members = [
+"crates/forensis-core",
+"crates/forensis-cli",
+"crates/forensis-app",
+"crates/forensis-tui",
+
+# "crates/forensis-disk",
+
+# "crates/forensis-filesystem",
+
+# "crates/forensis-fs-ntfs",
+
+# "crates/forensis-fs-ext4",
+
+# "crates/forensis-fs-fat32",
+
+# "crates/forensis-carving",
+
+# "crates/forensis-report",
+
+# "crates/forensis-hash",
+
+]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Josenilson Ferreira da Silva <nilsonfsilva@hotmail.com>"]
+license = "GPL-3.0-or-later"
+rust-version = "1.82"
+description = "Forensis: forensic analysis and recovery directly from disk bytes."
+readme = "README.md"
+keywords = ["forensics", "filesystem", "ntfs", "recovery", "disk"]
+categories = ["forensics", "filesystem", "parser-implementations"]
+
+[workspace.dependencies]
+
+anyhow = "1"
+sha2 = "0.10"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+byteorder = "1"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+
+ratatui = "0.29"
+crossterm = "0.28"
