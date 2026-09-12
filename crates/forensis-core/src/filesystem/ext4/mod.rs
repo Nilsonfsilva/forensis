@@ -1,0 +1,41 @@
+//! EXT4 filesystem implementation.
+
+pub mod block_bitmap;
+pub mod block_group;
+pub mod block_group_descriptor;
+pub mod block_group_table;
+pub mod directory;
+pub mod extent;
+pub mod extent_header;
+pub mod extent_index;
+pub mod extent_tree;
+pub mod filesystem;
+pub mod inode;
+pub mod inode_bitmap;
+pub mod inode_locator;
+pub mod inode_table;
+pub mod investigation;
+pub mod investigation_entry;
+pub mod journal;
+pub mod reader;
+pub mod superblock;
+
+pub use block_bitmap::Ext4BlockBitmap;
+pub use block_group::Ext4BlockGroup;
+pub use block_group_descriptor::Ext4BlockGroupDescriptor;
+pub use block_group_table::Ext4BlockGroupTable;
+pub use directory::Ext4DirectoryEntry;
+pub use extent::Ext4Extent;
+pub use extent_header::Ext4ExtentHeader;
+pub use extent_index::Ext4ExtentIndex;
+pub use extent_tree::resolve_extents;
+pub use filesystem::Ext4Filesystem;
+pub use inode::Ext4Inode;
+pub use inode_bitmap::Ext4InodeBitmap;
+pub use inode_locator::Ext4InodeLocator;
+pub use inode_table::Ext4InodeTable;
+pub use investigation::{investigate_filesystem, Ext4Investigation, ROOT_INODE};
+pub use investigation_entry::Ext4InvestigationEntry;
+pub use journal::Ext4Journal;
+pub use reader::Ext4Reader;
+pub use superblock::Ext4Superblock;

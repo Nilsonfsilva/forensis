@@ -1,0 +1,23 @@
+[package]
+name = "forensis-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Forensis core: filesystem parsing (NTFS, EXT4, FAT32) and a forensic model built directly from disk bytes."
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+byteorder.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

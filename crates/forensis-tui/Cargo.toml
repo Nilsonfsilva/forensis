@@ -1,0 +1,20 @@
+[package]
+name = "forensis-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Forensis terminal user interface (TUI)."
+publish = false
+
+[[bin]]
+name = "forensis-tui"
+path = "src/main.rs"
+
+[dependencies]
+forensis-app = { path = "../forensis-app" }
+
+anyhow.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
