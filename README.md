@@ -120,10 +120,12 @@ binary as `target/release/forensis-tui`.
 forensis inspect disk.img
 ```
 
-Show an object's detail by ID:
+Show an object's detail by ID (workspace the ID of an object from the
+listing; `64` below is only an example value):
 
 ```sh
-forensis inspect disk.img --detail 64
+forensis inspect disk.img --detail <OBJECT_ID>
+# exemplo: forensis inspect disk.img --detail 64
 ```
 
 Filter objects by status (`normal`, `system`, `deleted`, `carved`,

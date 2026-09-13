@@ -397,6 +397,15 @@ impl ForensicHierarchy {
 pub struct ForensicMetadata {
     pub real_size: Option<u64>,
     pub allocated_size: Option<u64>,
+
+    /// Creation timestamp of the object when the filesystem records it.
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Last modification timestamp of the object when recorded.
+    pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Last access timestamp of the object when recorded.
+    pub accessed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ForensicMetadata {
@@ -404,7 +413,23 @@ impl ForensicMetadata {
         Self {
             real_size,
             allocated_size,
+            created_at: None,
+            modified_at: None,
+            accessed_at: None,
         }
+    }
+
+    /// Associates filesystem timestamps with the metadata.
+    pub fn with_timestamps(
+        mut self,
+        created_at: Option<chrono::DateTime<chrono::Utc>>,
+        modified_at: Option<chrono::DateTime<chrono::Utc>>,
+        accessed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        self.created_at = created_at;
+        self.modified_at = modified_at;
+        self.accessed_at = accessed_at;
+        self
     }
 }
 
@@ -590,5 +615,6 @@ pub enum ForensicFilesystem {
     Ext4,
     Ext3,
     Fat32,
+    ExFat,
     Unknown,
 }

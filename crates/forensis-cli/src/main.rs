@@ -1406,6 +1406,27 @@ fn format_forensic_entry_detail(entry: &ForensicEntry) -> String {
         ));
     }
 
+    if let Some(created_at) = entry.metadata.created_at {
+        output.push_str(&format!(
+            "Created:                {}\n",
+            created_at.to_rfc3339()
+        ));
+    }
+
+    if let Some(modified_at) = entry.metadata.modified_at {
+        output.push_str(&format!(
+            "Modified:               {}\n",
+            modified_at.to_rfc3339()
+        ));
+    }
+
+    if let Some(accessed_at) = entry.metadata.accessed_at {
+        output.push_str(&format!(
+            "Accessed:               {}\n",
+            accessed_at.to_rfc3339()
+        ));
+    }
+
     if let Some(allocated) = entry.allocation.allocated {
         output.push_str(&format!("Allocated:              {}\n", allocated));
     }

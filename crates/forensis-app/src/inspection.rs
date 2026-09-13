@@ -77,6 +77,25 @@ fn inspect_filesystem<R: Readable>(
             investigation.to_forensic_model(image_source)
         }
 
+        FileSystemType::ExFat => {
+            let exfat = match partition {
+                Some(partition) => FileSystemDetector::open_exfat(reader, partition)?,
+                None => FileSystemDetector::open_exfat_at(reader, offset)?,
+            };
+
+            let partition_offset = match partition {
+                Some(partition) => partition.start_sector * 512,
+                None => offset,
+            };
+
+            let mut exfat_reader =
+                forensis_core::filesystem::exfat::ExFatReader::new(&mut *reader, partition_offset)?;
+
+            let investigation = exfat.investigate(&mut exfat_reader)?;
+
+            investigation.to_forensic_model(image_source)
+        }
+
         /*
          * Unsupported filesystems never reach this helper because
          * detection is always checked with `is_supported()` first.
@@ -110,7 +129,7 @@ pub struct InspectionResult {
     ///
     /// The tree is built exclusively from the
     /// ForensicModel and does not depend on NTFS, EXT4,
-    /// FAT32 or any other filesystem.
+    /// FAT32, exFAT or any other filesystem.
     pub trees: Vec<Option<ForensicTree>>,
 }
 

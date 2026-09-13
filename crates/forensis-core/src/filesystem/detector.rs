@@ -3,6 +3,7 @@ use crate::result::Result;
 use crate::traits::Readable;
 use crate::types::ByteOffset;
 
+use super::exfat::{ExFatFilesystem, ExFatReader};
 use super::ext4::{Ext4Filesystem, Ext4Reader};
 use super::fat32::{Fat32Filesystem, Fat32Reader};
 use super::ntfs::NtfsFileSystem;
@@ -24,7 +25,7 @@ impl FileSystemType {
     /// Returns true when Forensis currently has a filesystem
     /// implementation capable of forensic analysis.
     pub fn is_supported(&self) -> bool {
-        matches!(self, Self::Ntfs | Self::Ext4 | Self::Fat32)
+        matches!(self, Self::Ntfs | Self::Ext4 | Self::Fat32 | Self::ExFat)
     }
 
     /// Returns a human-readable filesystem name.
@@ -65,6 +66,10 @@ impl FileSystemDetector {
 
         if boot_sector.windows(5).any(|x| x == b"FAT32") {
             return Ok(FileSystemType::Fat32);
+        }
+
+        if &boot_sector[3..11] == b"EXFAT   " {
+            return Ok(FileSystemType::ExFat);
         }
 
         let mut superblock = [0u8; 1024];
@@ -141,6 +146,29 @@ impl FileSystemDetector {
         Fat32Filesystem::open(&mut fat32_reader)
     }
 
+    /// Creates an exFAT filesystem from a partition.
+    ///
+    /// This method must only be called after filesystem
+    /// detection has confirmed exFAT support.
+    pub fn open_exfat<R: Readable>(
+        reader: &mut R,
+        partition: &Partition,
+    ) -> Result<ExFatFilesystem> {
+        let partition_offset = partition.start_sector * 512;
+
+        Self::open_exfat_at(reader, partition_offset)
+    }
+
+    /// Creates an exFAT filesystem starting at a byte offset.
+    ///
+    /// This method must only be called after filesystem
+    /// detection has confirmed exFAT support.
+    pub fn open_exfat_at<R: Readable>(reader: &mut R, offset: u64) -> Result<ExFatFilesystem> {
+        let mut exfat_reader = ExFatReader::new(reader, offset)?;
+
+        ExFatFilesystem::open(&mut exfat_reader)
+    }
+
     /// Returns true when an MBR partition entry contains
     /// a partition type recognized by Forensis.
     ///
@@ -173,8 +201,8 @@ mod tests {
     }
 
     #[test]
-    fn exfat_is_not_supported_yet() {
-        assert!(!FileSystemType::ExFat.is_supported());
+    fn exfat_is_supported() {
+        assert!(FileSystemType::ExFat.is_supported());
     }
 
     #[test]
