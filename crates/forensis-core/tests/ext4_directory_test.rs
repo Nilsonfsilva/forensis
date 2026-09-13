@@ -1,11 +1,6 @@
 use forensis_core::filesystem::ext4::Ext4DirectoryEntry;
 
-fn build_entry(
-    inode: u32,
-    record_length: u16,
-    name: &[u8],
-    file_type: u8,
-) -> Vec<u8> {
+fn build_entry(inode: u32, record_length: u16, name: &[u8], file_type: u8) -> Vec<u8> {
     let mut data = vec![0u8; record_length as usize];
 
     data[0..4].copy_from_slice(&inode.to_le_bytes());

@@ -1,9 +1,15 @@
+use std::path::Path;
+
 use forensis_core::filesystem::ntfs::{DataRun, DataRunReader};
 
 use forensis_core::image_reader::ImageReader;
 
 fn test_image_path() -> String {
-    format!("{}/../../lab/ntfs/disk.img", env!("CARGO_MANIFEST_DIR"),)
+    format!("{}/../../lab/ntfs/disk.img", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn image_available() -> bool {
+    Path::new(&test_image_path()).exists()
 }
 
 #[test]
@@ -18,6 +24,11 @@ fn test_lcn_offset() {
 #[test]
 fn test_read_run() {
     let image_path = test_image_path();
+
+    if !image_available() {
+        eprintln!("skipping: lab/ntfs/disk.img not available");
+        return;
+    }
 
     let image = ImageReader::open(&image_path).unwrap();
 
@@ -38,6 +49,11 @@ fn test_read_run() {
 #[test]
 fn test_read_multiple_runs() {
     let image_path = test_image_path();
+
+    if !image_available() {
+        eprintln!("skipping: lab/ntfs/disk.img not available");
+        return;
+    }
 
     let image = ImageReader::open(&image_path).unwrap();
 

@@ -1,11 +1,6 @@
 use forensis_core::filesystem::ext4::Ext4ExtentHeader;
 
-fn build_header(
-    entries: u16,
-    max: u16,
-    depth: u16,
-    generation: u32,
-) -> [u8; 12] {
+fn build_header(entries: u16, max: u16, depth: u16, generation: u32) -> [u8; 12] {
     let mut data = [0u8; 12];
 
     data[0x00..0x02].copy_from_slice(&Ext4ExtentHeader::MAGIC.to_le_bytes());

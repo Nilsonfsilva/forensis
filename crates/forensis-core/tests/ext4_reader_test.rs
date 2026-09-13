@@ -14,7 +14,6 @@ impl MemoryReader {
             data: vec![0u8; size],
         }
     }
-
 }
 
 impl Readable for MemoryReader {
@@ -43,6 +42,7 @@ impl Readable for MemoryReader {
     }
 }
 
+#[allow(clippy::identity_op)]
 fn write_superblock(data: &mut [u8], partition_offset: usize) {
     let offset = partition_offset + 1024;
 
@@ -54,38 +54,27 @@ fn write_superblock(data: &mut [u8], partition_offset: usize) {
     data[offset + 0x18..offset + 0x1C].copy_from_slice(&2u32.to_le_bytes());
     data[offset + 0x20..offset + 0x24].copy_from_slice(&8192u32.to_le_bytes());
     data[offset + 0x28..offset + 0x2C].copy_from_slice(&8192u32.to_le_bytes());
-    data[offset + 0x38..offset + 0x3A]
-        .copy_from_slice(&0xEF53u16.to_le_bytes());
-    data[offset + 0x58..offset + 0x5A]
-        .copy_from_slice(&256u16.to_le_bytes());
+    data[offset + 0x38..offset + 0x3A].copy_from_slice(&0xEF53u16.to_le_bytes());
+    data[offset + 0x58..offset + 0x5A].copy_from_slice(&256u16.to_le_bytes());
 }
 
+#[allow(clippy::identity_op)]
 fn write_block_group_table(data: &mut [u8], partition_offset: usize) {
     let table_offset = partition_offset + 4096;
 
-    let descriptor0 = [
-        100u32,
-        200u32,
-        300u32,
-    ];
+    let descriptor0 = [100u32, 200u32, 300u32];
 
-    data[table_offset + 0x00..table_offset + 0x04]
-        .copy_from_slice(&descriptor0[0].to_le_bytes());
+    data[table_offset + 0x00..table_offset + 0x04].copy_from_slice(&descriptor0[0].to_le_bytes());
 
-    data[table_offset + 0x04..table_offset + 0x08]
-        .copy_from_slice(&descriptor0[1].to_le_bytes());
+    data[table_offset + 0x04..table_offset + 0x08].copy_from_slice(&descriptor0[1].to_le_bytes());
 
-    data[table_offset + 0x08..table_offset + 0x0C]
-        .copy_from_slice(&descriptor0[2].to_le_bytes());
+    data[table_offset + 0x08..table_offset + 0x0C].copy_from_slice(&descriptor0[2].to_le_bytes());
 
-    data[table_offset + 0x0C..table_offset + 0x0E]
-        .copy_from_slice(&400u16.to_le_bytes());
+    data[table_offset + 0x0C..table_offset + 0x0E].copy_from_slice(&400u16.to_le_bytes());
 
-    data[table_offset + 0x0E..table_offset + 0x10]
-        .copy_from_slice(&500u16.to_le_bytes());
+    data[table_offset + 0x0E..table_offset + 0x10].copy_from_slice(&500u16.to_le_bytes());
 
-    data[table_offset + 0x10..table_offset + 0x12]
-        .copy_from_slice(&600u16.to_le_bytes());
+    data[table_offset + 0x10..table_offset + 0x12].copy_from_slice(&600u16.to_le_bytes());
 
     let descriptor1_offset = table_offset + 32;
 

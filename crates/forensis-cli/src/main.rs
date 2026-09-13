@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use forensis_app::recovery::HashComparison;
 use forensis_app::{
     discover_sources, inspect_image, next_recovery_ticket, recover_all, recover_object,
-    EvidenceSource, ForensicEntry, ForensicEntryKind, ForensicModel, ForensicStatus,
-    ForensicTree, ForensicTreeNode, InspectionResult,
+    EvidenceSource, ForensicEntry, ForensicEntryKind, ForensicModel, ForensicStatus, ForensicTree,
+    ForensicTreeNode, InspectionResult,
 };
 
 #[derive(Parser, Debug)]
@@ -451,10 +451,9 @@ fn recover_command(command: RecoverCommand) -> Result<()> {
 fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
     let ticket = next_recovery_ticket()?;
 
-    let working_dir =
-        PathBuf::from("forensis-recovery").join(format!(".working-{}", ticket));
+    std::fs::create_dir_all(&output)?;
 
-    std::fs::create_dir_all(&working_dir)?;
+    let working_dir = output.join(format!(".working-{}", ticket));
 
     println!("Forensis");
     println!("========");
@@ -501,8 +500,7 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
     print!(
         "{}Select objects to recover [1-5] (e.g. 1,3,5), A=all, Q=cancel:{} ",
-        COLOR_LIGHT_YELLOW,
-        COLOR_RESET
+        COLOR_LIGHT_YELLOW, COLOR_RESET
     );
 
     io::stdout().flush()?;
@@ -548,11 +546,7 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
         println!();
 
-        match recover_object(
-            &image,
-            entry.identity.object_id,
-            &working_dir,
-        ) {
+        match recover_object(&image, entry.identity.object_id, &working_dir) {
             Ok(result) => {
                 print_recovery_result(&result);
 
@@ -589,8 +583,7 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
     println!("Failed: {}", failed);
 
-    let final_dir =
-        PathBuf::from("forensis-recovery").join(format!("forensis-recovery-cli-{}", ticket));
+    let final_dir = output.join(format!("forensis-recovery-cli-{}", ticket));
 
     if final_dir.exists() {
         return Err(anyhow!(

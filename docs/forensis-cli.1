@@ -1,4 +1,4 @@
-.TH FORENSIS-CLI 1 "2026-09" "Forensis 0.1.0" "User Commands"
+.TH FORENSIS-CLI 1 "2026-09" "Forensis 0.2.0" "User Commands"
 .SH NAME
 forensis \- command line interface for digital forensic investigation
 .SH SYNOPSIS
@@ -25,9 +25,9 @@ Inspect disk images and enumerate block devices, partitions and filesystems.
 .IP \[bu]
 Filesystem-independent forensic model of files, directories and deleted objects.
 .IP \[bu]
-NTFS and ext4 filesystem support in this version.
+NTFS, ext4 and FAT32 filesystem support in this version.
 .IP \[bu]
-FAT32 and exFAT filesystem support is planned (roadmap).
+exFAT filesystem support is planned (roadmap).
 .IP \[bu]
 Recovery of objects marked as deleted, backed by physical data extraction.
 .IP \[bu]
@@ -238,6 +238,8 @@ cargo run --bin forensis inspect \e
     lab/ntfs-validation/disk-recursive.img --status deleted
 cargo run --bin forensis inspect \e
     lab/ext4-validation/disk-ext4.img --status deleted
+cargo run --bin forensis inspect \e
+    lab/fat32-validation/disk-fat32.img --status deleted
 .EE
 .RE
 .SH CAVEATS
@@ -245,15 +247,11 @@ The
 .B recover deleted
 subcommand accepts
 .BR \-\-output ,
-but in this version the working directory and the final location are always
-managed inside
-.IR forensis-recovery/ .
-Use
-.B recover all
-to control the destination directory explicitly.
+which is used as the destination directory for both the working and the
+final recovery locations.
 .PP
-This version parses the NTFS and ext4 filesystems. Paths that do not contain a
-supported filesystem are reported as
+This version parses the NTFS, ext4 and FAT32 filesystems. Paths that do not
+contain a supported filesystem are reported as
 .RB \(oq Unsupported\ evidence\ source \(cq.
 .PP
 Sector geometry is assumed to use 512-byte sectors. Images built with a

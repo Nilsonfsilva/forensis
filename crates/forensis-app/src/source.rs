@@ -93,16 +93,10 @@ fn discover_directory_sources(directory: &Path) -> Result<Vec<EvidenceSource>> {
 
     if sources.is_empty() {
         if is_dev_directory {
-            return Err(anyhow!(
-                "No block devices found in {}",
-                directory.display()
-            ));
+            return Err(anyhow!("No block devices found in {}", directory.display()));
         }
 
-return Err(anyhow!(
-                "No files found in {}",
-                directory.display()
-            ));
+        return Err(anyhow!("No files found in {}", directory.display()));
     }
 
     Ok(sources)
@@ -122,7 +116,7 @@ fn is_block_device(path: &Path) -> Result<bool> {
     {
         use std::os::unix::fs::FileTypeExt;
 
-        return Ok(metadata.file_type().is_block_device());
+        Ok(metadata.file_type().is_block_device())
     }
 
     #[cfg(not(unix))]
@@ -152,7 +146,7 @@ fn is_partition_device(path: &Path) -> Result<bool> {
             .join(name.as_ref())
             .join("partition");
 
-        return Ok(partition_path.exists());
+        Ok(partition_path.exists())
     }
 
     #[cfg(not(target_os = "linux"))]

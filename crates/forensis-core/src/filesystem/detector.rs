@@ -4,6 +4,7 @@ use crate::traits::Readable;
 use crate::types::ByteOffset;
 
 use super::ext4::{Ext4Filesystem, Ext4Reader};
+use super::fat32::{Fat32Filesystem, Fat32Reader};
 use super::ntfs::NtfsFileSystem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +24,7 @@ impl FileSystemType {
     /// Returns true when Forensis currently has a filesystem
     /// implementation capable of forensic analysis.
     pub fn is_supported(&self) -> bool {
-        matches!(self, Self::Ntfs | Self::Ext4)
+        matches!(self, Self::Ntfs | Self::Ext4 | Self::Fat32)
     }
 
     /// Returns a human-readable filesystem name.
@@ -117,12 +118,36 @@ impl FileSystemDetector {
         Ext4Filesystem::open(&mut ext4_reader)
     }
 
+    /// Creates a FAT32 filesystem from a partition.
+    ///
+    /// This method must only be called after filesystem
+    /// detection has confirmed FAT32 support.
+    pub fn open_fat32<R: Readable>(
+        reader: &mut R,
+        partition: &Partition,
+    ) -> Result<Fat32Filesystem> {
+        let partition_offset = partition.start_sector * 512;
+
+        Self::open_fat32_at(reader, partition_offset)
+    }
+
+    /// Creates a FAT32 filesystem starting at a byte offset.
+    ///
+    /// This method must only be called after filesystem
+    /// detection has confirmed FAT32 support.
+    pub fn open_fat32_at<R: Readable>(reader: &mut R, offset: u64) -> Result<Fat32Filesystem> {
+        let mut fat32_reader = Fat32Reader::new(reader, offset)?;
+
+        Fat32Filesystem::open(&mut fat32_reader)
+    }
+
     /// Returns true when an MBR partition entry contains
     /// a partition type recognized by Forensis.
     ///
     /// This keeps MBR detection consistent with the MBR parser
     /// itself and prevents filesystem boot-sector bytes from
     /// being interpreted as partition entries.
+    #[allow(dead_code)]
     fn is_known_mbr_partition_type(value: u8) -> bool {
         Mbr::parse_partition_type(value) != crate::partition::PartitionType::Unknown
     }
@@ -143,8 +168,8 @@ mod tests {
     }
 
     #[test]
-    fn fat32_is_not_supported_yet() {
-        assert!(!FileSystemType::Fat32.is_supported());
+    fn fat32_is_supported() {
+        assert!(FileSystemType::Fat32.is_supported());
     }
 
     #[test]

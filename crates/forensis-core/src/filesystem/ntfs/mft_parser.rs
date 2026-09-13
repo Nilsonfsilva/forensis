@@ -115,8 +115,6 @@ impl MftParser {
             ]);
 
             if attribute_type_raw == 0xFFFFFFFF {
-                if record.index == 65 {}
-
                 break;
             }
 

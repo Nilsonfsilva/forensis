@@ -258,7 +258,7 @@ pub fn investigate_filesystem<R: Readable>(
                 let value = match filesystem.read_inode_bitmap(reader, group as usize) {
                     Ok(bitmap) => bitmap,
 
-                    Err(_) => Ext4InodeBitmap::parse(&vec![0u8; 1])?,
+                    Err(_) => Ext4InodeBitmap::parse(&[0u8; 1])?,
                 };
 
                 entry.insert(value)
@@ -267,11 +267,8 @@ pub fn investigate_filesystem<R: Readable>(
 
         let bitmap_allocated = bitmap.is_allocated(inode_number as u64);
 
-        let extents = match resolve_extents(reader, superblock, &inode) {
-            Ok(extents) => extents,
-
-            Err(_) => Vec::new(),
-        };
+        let extents: Vec<Ext4Extent> =
+            resolve_extents(reader, superblock, &inode).unwrap_or_default();
 
         let data = if inode.is_symlink() {
             inode.fast_symlink_target()
@@ -332,7 +329,7 @@ pub fn investigate_filesystem<R: Readable>(
      * directory entries whose inode has not yet been reused.
      */
     for group in 0..filesystem.block_group_count() {
-        let (_, bitmap, table) = match filesystem.read_block_group(reader, group as usize) {
+        let (_, bitmap, table) = match filesystem.read_block_group(reader, group) {
             Ok(metadata) => metadata,
 
             Err(_) => continue,
@@ -377,11 +374,8 @@ pub fn investigate_filesystem<R: Readable>(
                 .cloned()
                 .unwrap_or_else(|| (format!("inode-{}", inode_number), ROOT_INODE));
 
-            let extents = match resolve_extents(reader, superblock, &inode) {
-                Ok(extents) => extents,
-
-                Err(_) => Vec::new(),
-            };
+            let extents: Vec<Ext4Extent> =
+                resolve_extents(reader, superblock, &inode).unwrap_or_default();
 
             let data = if inode.is_symlink() {
                 inode.fast_symlink_target()
@@ -457,7 +451,7 @@ fn read_directory_entries<R: Readable>(
         let mut logical_block = extent.logical_block() as u64;
 
         for delta in 0..extent.length() as u64 {
-            let directory_offset = logical_block.checked_mul(block_size).unwrap_or(u64::MAX);
+            let directory_offset = logical_block.saturating_mul(block_size);
 
             if directory_offset >= inode.size() {
                 break;
