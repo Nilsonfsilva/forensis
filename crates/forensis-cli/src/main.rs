@@ -3,12 +3,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-
 use forensis_app::recovery::HashComparison;
+
 use forensis_app::{
-    discover_sources, inspect_image, next_recovery_ticket, recover_all, recover_object,
+    discover_sources, inspect_image, inspect_image_with_progress, next_recovery_ticket,
+    recover_all_from_result, recover_object_from_result, recover_objects_from_result,
     EvidenceSource, ForensicEntry, ForensicEntryKind, ForensicModel, ForensicStatus, ForensicTree,
-    ForensicTreeNode, InspectionResult,
+    ForensicTreeNode, InspectionResult, ProgressEvent, ProgressPhase, ProgressReporter,
+    ProgressUnit, RecoveryFilter,
 };
 
 #[derive(Parser, Debug)]
@@ -69,12 +71,30 @@ enum RecoverCommand {
         /// Directory where recovered files will be written.
         #[arg(short, long)]
         output: PathBuf,
+
+        /// Object IDs to recover (skips interactive selection).
+        #[arg(long)]
+        object: Vec<u64>,
+    },
+
+    /// Selects and recovers objects marked as normal (live files).
+    Normal {
+        /// Path to the disk image.
+        image: PathBuf,
+
+        /// Directory where recovered files will be written.
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Object IDs to recover (skips interactive selection).
+        #[arg(long)]
+        object: Vec<u64>,
     },
 
     /// Runs all currently available recovery methods.
     ///
     /// At this stage this includes physical recovery of
-    /// deleted filesystem objects.
+    /// deleted and normal filesystem objects.
     All {
         /// Path to the disk image.
         image: PathBuf,
@@ -82,6 +102,10 @@ enum RecoverCommand {
         /// Directory where recovered files will be written.
         #[arg(short, long)]
         output: PathBuf,
+
+        /// Object IDs to recover (skips the full scope).
+        #[arg(long)]
+        object: Vec<u64>,
     },
 }
 
@@ -308,12 +332,91 @@ fn select_source(path: &Path) -> Result<EvidenceSource> {
         .ok_or_else(|| anyhow!("Selected source not found."))
 }
 
+/// Reports filesystem investigation progress to the terminal.
+struct CliProgressReporter;
+
+impl ProgressReporter for CliProgressReporter {
+    fn report(&self, event: ProgressEvent) {
+        match event.phase {
+            ProgressPhase::ReadingMetadata => {
+                print!("\rInvestigating filesystem: reading metadata...");
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::ReadingData => {
+                print!("\rInvestigating filesystem: reading data...");
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::ProcessingRecords => {
+                let unit = match event.unit {
+                    ProgressUnit::MftRecords => "MFT records",
+                    ProgressUnit::Records => "records",
+                    ProgressUnit::Inodes => "inodes",
+                    ProgressUnit::DirectoryClusters => "directory clusters",
+                    ProgressUnit::Bytes => "bytes",
+                    ProgressUnit::Objects => "objects",
+                    ProgressUnit::None => "units",
+                };
+
+                if let Some(total) = event.total {
+                    let percentage = event.percentage().unwrap_or(0);
+
+                    print!(
+                        "\rInvestigating filesystem: {:3}% ({}/{} {})",
+                        percentage, event.current, total, unit
+                    );
+                } else {
+                    print!("\rInvestigating filesystem: {} {}", event.current, unit);
+                }
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::BuildingEntries => {
+                print!("\rInvestigating filesystem: building forensic entries...");
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::Recovering => {
+                let percentage = event.percentage().unwrap_or(0);
+
+                print!(
+                    "\rRecovering objects: {:3}% ({} of {})",
+                    percentage,
+                    event.current,
+                    event.total.unwrap_or(0)
+                );
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::DetectingFilesystem => {
+                print!("\rDetecting filesystem...");
+
+                let _ = io::stdout().flush();
+            }
+
+            ProgressPhase::Completed => {
+                println!("\rCompleted: 100%");
+
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+}
+
 fn inspect_image_command(
     path: PathBuf,
     detail: Option<u64>,
     status: Option<StatusFilter>,
 ) -> Result<()> {
-    let result = inspect_image(&path)?;
+    let reporter = CliProgressReporter;
+
+    let result = inspect_image_with_progress(&path, &reporter)?;
 
     /*
      * --detail keeps priority.
@@ -436,19 +539,40 @@ fn format_status_filter(result: &InspectionResult, status: StatusFilter) -> Stri
 
 fn recover_command(command: RecoverCommand) -> Result<()> {
     match command {
-        RecoverCommand::Deleted { image, output } => {
-            recover_deleted_command(image, output)?;
+        RecoverCommand::Deleted {
+            image,
+            output,
+            object,
+        } => {
+            recover_scope_command(image, output, object, RecoveryFilter::Deleted)?;
         }
 
-        RecoverCommand::All { image, output } => {
-            recover_all_command(image, output)?;
+        RecoverCommand::Normal {
+            image,
+            output,
+            object,
+        } => {
+            recover_scope_command(image, output, object, RecoveryFilter::Normal)?;
+        }
+
+        RecoverCommand::All {
+            image,
+            output,
+            object,
+        } => {
+            recover_all_command(image, output, object)?;
         }
     }
 
     Ok(())
 }
 
-fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
+fn recover_scope_command(
+    image: PathBuf,
+    output: PathBuf,
+    requested_objects: Vec<u64>,
+    filter: RecoveryFilter,
+) -> Result<()> {
     let ticket = next_recovery_ticket()?;
 
     std::fs::create_dir_all(&output)?;
@@ -459,7 +583,7 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
     println!("========");
     println!();
 
-    println!("Recovery: Deleted objects");
+    println!("Recovery: {} objects", filter_scope_name(filter));
     println!("Ticket: {}", ticket);
 
     println!("Image: {}", image.display());
@@ -468,60 +592,90 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
     println!();
 
-    let inspection = inspect_image(&image)?;
+    let reporter = CliProgressReporter;
 
-    let deleted_entries = collect_deleted_entries(&inspection);
+    let inspection = inspect_image_with_progress(&image, &reporter)?;
 
-    if deleted_entries.is_empty() {
-        println!("No recoverable deleted objects found.");
+    let object_ids = if requested_objects.is_empty() {
+        let candidates = collect_recoverable_candidates(&inspection, filter);
 
-        return Ok(());
-    }
+        if candidates.is_empty() {
+            println!(
+                "No recoverable {} objects found.",
+                filter_scope_name(filter).to_lowercase()
+            );
 
-    println!("Recoverable deleted objects:");
-    println!();
+            return Ok(());
+        }
 
-    for (index, entry) in deleted_entries.iter().enumerate() {
         println!(
-            "{}[{}]{} {}{}",
-            COLOR_RED,
-            index + 1,
-            COLOR_RESET,
-            entry.identity.name,
+            "Recoverable {} objects:",
+            filter_scope_name(filter).to_lowercase()
+        );
+
+        println!();
+
+        let item_color = match filter {
+            RecoveryFilter::Deleted => COLOR_RED,
+            _ => COLOR_LIGHT_YELLOW,
+        };
+
+        for (index, entry) in candidates.iter().enumerate() {
+            println!(
+                "{}[{}]{} {}{}",
+                item_color,
+                index + 1,
+                COLOR_RESET,
+                entry.identity.name,
+                COLOR_RESET
+            );
+
+            println!("    Object ID: {}", entry.identity.object_id);
+
+            println!("    Path: {}", entry.identity.path);
+
+            println!();
+        }
+
+        print!(
+            "{}Select objects to recover [1-{}] (e.g. 1,3,5), A=all, Q=cancel:{} ",
+            COLOR_LIGHT_YELLOW,
+            candidates.len(),
             COLOR_RESET
         );
 
-        println!("    Object ID: {}", entry.identity.object_id);
+        io::stdout().flush()?;
 
-        println!("    Path: {}", entry.identity.path);
+        let mut input = String::new();
 
-        println!();
-    }
+        io::stdin().read_line(&mut input)?;
 
-    print!(
-        "{}Select objects to recover [1-5] (e.g. 1,3,5), A=all, Q=cancel:{} ",
-        COLOR_LIGHT_YELLOW, COLOR_RESET
-    );
+        let trimmed = input.trim();
 
-    io::stdout().flush()?;
+        if trimmed.eq_ignore_ascii_case("q") {
+            println!("Recovery cancelled.");
 
-    let mut input = String::new();
+            return Ok(());
+        }
 
-    io::stdin().read_line(&mut input)?;
+        let selected_positions = parse_recovery_selection(trimmed, candidates.len())?;
 
-    let trimmed = input.trim();
+        if selected_positions.is_empty() {
+            return Err(anyhow!("No objects selected."));
+        }
 
-    if trimmed.eq_ignore_ascii_case("q") {
-        println!("Recovery cancelled.");
-
-        return Ok(());
-    }
-
-    let selected_positions = parse_recovery_selection(trimmed, deleted_entries.len())?;
-
-    if selected_positions.is_empty() {
-        return Err(anyhow!("No objects selected."));
-    }
+        selected_positions
+            .iter()
+            .map(|position| {
+                candidates
+                    .get(position - 1)
+                    .map(|entry| entry.identity.object_id)
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| anyhow!("Selected object no longer exists."))?
+    } else {
+        requested_objects
+    };
 
     println!();
 
@@ -529,40 +683,76 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
     let mut failed = 0usize;
 
-    for position in selected_positions {
-        let entry = deleted_entries
-            .get(position - 1)
-            .ok_or_else(|| anyhow!("Selected object no longer exists."))?;
+    recover_object_loop(
+        &inspection,
+        &object_ids,
+        &working_dir,
+        &mut recovered,
+        &mut failed,
+    )?;
+
+    save_recovery_work(&output, &ticket, &working_dir, recovered, failed)?;
+
+    Ok(())
+}
+
+fn recover_object_loop(
+    inspection: &InspectionResult,
+    object_ids: &[u64],
+    working_dir: &Path,
+    recovered: &mut usize,
+    failed: &mut usize,
+) -> Result<()> {
+    let total = object_ids.len();
+
+    for (position_index, object_id) in object_ids.iter().enumerate() {
+        let entry = inspection
+            .models
+            .iter()
+            .flatten()
+            .find_map(|model| model.entry(*object_id));
 
         println!("==================================================");
 
-        println!("Recovering object:");
+        println!("Recovering object {}/{}:", position_index + 1, total);
 
-        println!("Object ID: {}", entry.identity.object_id);
+        match entry {
+            Some(entry) => {
+                println!("Object ID: {}", entry.identity.object_id);
 
-        println!("Name: {}", entry.identity.name);
+                println!("Name: {}", entry.identity.name);
 
-        println!("Path: {}", entry.identity.path);
+                println!("Path: {}", entry.identity.path);
+            }
+
+            None => {
+                println!("Object ID: {}", object_id);
+
+                println!("Name: (unknown)");
+
+                println!("Path: (unknown)");
+            }
+        }
 
         println!();
 
-        match recover_object(&image, entry.identity.object_id, &working_dir) {
+        match recover_object_from_result(inspection, *object_id, working_dir) {
             Ok(result) => {
                 print_recovery_result(&result);
 
                 if result.recovery.is_recovered() {
-                    recovered += 1;
+                    *recovered += 1;
                 } else {
-                    failed += 1;
+                    *failed += 1;
                 }
             }
 
             Err(error) => {
-                failed += 1;
+                *failed += 1;
 
                 println!("Recovery status: {}", format_error_status());
 
-                println!("Object ID: {}", entry.identity.object_id);
+                println!("Object ID: {}", object_id);
 
                 println!("Recovery reason: {}", error);
             }
@@ -573,6 +763,16 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
         println!();
     }
 
+    Ok(())
+}
+
+fn save_recovery_work(
+    output: &Path,
+    ticket: &str,
+    working_dir: &Path,
+    recovered: usize,
+    failed: usize,
+) -> Result<()> {
     println!("Recovery summary");
 
     println!("----------------");
@@ -592,7 +792,7 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
         ));
     }
 
-    std::fs::rename(&working_dir, &final_dir)?;
+    std::fs::rename(working_dir, &final_dir)?;
 
     println!();
     println!("Recovery work saved to {}", final_dir.display());
@@ -600,18 +800,34 @@ fn recover_deleted_command(image: PathBuf, output: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn collect_deleted_entries(result: &InspectionResult) -> Vec<&ForensicEntry> {
-    let mut entries = Vec::new();
-
-    for model in result.models.iter().flatten() {
-        for entry in model.entries() {
-            if entry.identity.status == ForensicStatus::Deleted {
-                entries.push(entry);
-            }
-        }
+fn filter_scope_name(filter: RecoveryFilter) -> &'static str {
+    match filter {
+        RecoveryFilter::Deleted => "Deleted",
+        RecoveryFilter::Normal => "Normal",
+        RecoveryFilter::All => "All",
     }
+}
 
-    entries
+fn collect_recoverable_candidates(
+    result: &InspectionResult,
+    filter: RecoveryFilter,
+) -> Vec<&ForensicEntry> {
+    let mut candidates: Vec<&ForensicEntry> = result
+        .models
+        .iter()
+        .flatten()
+        .flat_map(|model| model.entries())
+        .filter(|entry| filter.matches(entry))
+        .collect();
+
+    candidates.sort_by(|a, b| {
+        a.identity
+            .path
+            .to_lowercase()
+            .cmp(&b.identity.path.to_lowercase())
+    });
+
+    candidates
 }
 
 fn parse_recovery_selection(input: &str, total: usize) -> Result<Vec<usize>> {
@@ -738,7 +954,7 @@ fn format_error_status() -> &'static str {
     "FAILED"
 }
 
-fn recover_all_command(image: PathBuf, output: PathBuf) -> Result<()> {
+fn recover_all_command(image: PathBuf, output: PathBuf, requested_objects: Vec<u64>) -> Result<()> {
     println!("Forensis");
     println!("========");
     println!();
@@ -751,7 +967,15 @@ fn recover_all_command(image: PathBuf, output: PathBuf) -> Result<()> {
 
     println!();
 
-    let results = recover_all(&image, &output)?;
+    let reporter = CliProgressReporter;
+
+    let inspection = inspect_image_with_progress(&image, &reporter)?;
+
+    let results = if requested_objects.is_empty() {
+        recover_all_from_result(&inspection, &output, &reporter)?
+    } else {
+        recover_objects_from_result(&inspection, &requested_objects, &output, &reporter)?
+    };
 
     let total = results.len();
 
@@ -1406,6 +1630,27 @@ fn format_forensic_entry_detail(entry: &ForensicEntry) -> String {
         ));
     }
 
+    if let Some(created_at) = entry.metadata.created_at {
+        output.push_str(&format!(
+            "Created:                {}\n",
+            created_at.to_rfc3339()
+        ));
+    }
+
+    if let Some(modified_at) = entry.metadata.modified_at {
+        output.push_str(&format!(
+            "Modified:               {}\n",
+            modified_at.to_rfc3339()
+        ));
+    }
+
+    if let Some(accessed_at) = entry.metadata.accessed_at {
+        output.push_str(&format!(
+            "Accessed:               {}\n",
+            accessed_at.to_rfc3339()
+        ));
+    }
+
     if let Some(allocated) = entry.allocation.allocated {
         output.push_str(&format!("Allocated:              {}\n", allocated));
     }
@@ -1603,7 +1848,7 @@ mod tests {
             trees: Vec::new(),
         };
 
-        let entries = collect_deleted_entries(&result);
+        let entries = collect_recoverable_candidates(&result, RecoveryFilter::Deleted);
 
         assert_eq!(entries.len(), 1);
 

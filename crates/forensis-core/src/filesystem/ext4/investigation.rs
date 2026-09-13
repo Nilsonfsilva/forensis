@@ -4,6 +4,7 @@ use super::extent_tree::resolve_extents;
 use super::{Ext4Extent, Ext4Filesystem, Ext4Inode, Ext4InodeBitmap, Ext4Reader};
 
 use crate::forensic::{ForensicEntry, ForensicFilesystem, ForensicModel, ForensicSource};
+use crate::progress::{NoProgress, ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit};
 use crate::result::Result;
 use crate::traits::Readable;
 
@@ -212,6 +213,22 @@ pub fn investigate_filesystem<R: Readable>(
     filesystem: &Ext4Filesystem,
     reader: &mut Ext4Reader<R>,
 ) -> Result<Ext4Investigation> {
+    investigate_filesystem_with_progress(filesystem, reader, &NoProgress)
+}
+
+/// Investigates an EXT4 filesystem and reports progress.
+///
+/// The walk has two moments that both report progress:
+///
+/// - the reachable-directory walk, reported as an indeterminate
+///   counter of processed inodes;
+/// - the inode table scan for deleted files, reported as a determined
+///   percentage because the total number of inode slots is known.
+pub fn investigate_filesystem_with_progress<R: Readable>(
+    filesystem: &Ext4Filesystem,
+    reader: &mut Ext4Reader<R>,
+    reporter: &dyn ProgressReporter,
+) -> Result<Ext4Investigation> {
     let superblock = filesystem.superblock();
 
     let bytes_per_block = superblock.block_size() as u64;
@@ -249,6 +266,12 @@ pub fn investigate_filesystem<R: Readable>(
         };
 
         investigation.increment_records();
+
+        reporter.report(ProgressEvent::indeterminate(
+            ProgressPhase::ProcessingRecords,
+            investigation.record_count(),
+            ProgressUnit::Inodes,
+        ));
 
         let group = (inode_number - 1) / inodes_per_group;
 
@@ -328,7 +351,24 @@ pub fn investigate_filesystem<R: Readable>(
      * timestamp. This scan finds files removed from their
      * directory entries whose inode has not yet been reused.
      */
-    for group in 0..filesystem.block_group_count() {
+    let group_count = filesystem.block_group_count();
+
+    let total_inodes = (group_count as u64).saturating_mul(u64::from(inodes_per_group));
+
+    for group in 0..group_count {
+        let processed_inodes = (group as u64 + 1) * u64::from(inodes_per_group);
+
+        /*
+         * Report once per group. The total number of inode slots
+         * is known in advance, so the scan is a determinate counter.
+         */
+        reporter.report(ProgressEvent::new(
+            ProgressPhase::ProcessingRecords,
+            processed_inodes.min(total_inodes),
+            total_inodes.max(1),
+            ProgressUnit::Inodes,
+        ));
+
         let (_, bitmap, table) = match filesystem.read_block_group(reader, group) {
             Ok(metadata) => metadata,
 
@@ -396,6 +436,8 @@ pub fn investigate_filesystem<R: Readable>(
             visited.insert(inode_number);
         }
     }
+
+    reporter.report(ProgressEvent::completed());
 
     Ok(investigation)
 }

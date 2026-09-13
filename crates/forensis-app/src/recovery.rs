@@ -1,14 +1,51 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use forensis_core::{
     disk::ImageReader,
+    forensic::ForensicModel,
+    progress::{NoProgress, ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit},
     recovery::{PhysicalRecoveryEngine, RecoveryEngine, RecoveryResult},
     ForensicEntry, ForensicStatus,
 };
 use sha2::{Digest, Sha256};
 
 use crate::inspect_image;
+use crate::InspectionResult;
+
+/// Scope of a recovery operation.
+///
+/// The recovery API works over forensic objects of the model, not over a
+/// filesystem-specific concept of "deleted files". Frontends use this
+/// filter to select which objects are candidates for recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryFilter {
+    /// Objects marked with Deleted status.
+    Deleted,
+    /// Objects marked with Normal status (live files).
+    Normal,
+    /// Every recoverable object in the model.
+    All,
+}
+
+impl RecoveryFilter {
+    /// Returns whether an object is a valid candidate for this filter.
+    ///
+    /// Directories are treated as navigation nodes and are never
+    /// recovered as objects.
+    pub fn matches(&self, entry: &ForensicEntry) -> bool {
+        if entry.is_directory() {
+            return false;
+        }
+
+        match self {
+            RecoveryFilter::Deleted => entry.identity.status == ForensicStatus::Deleted,
+            RecoveryFilter::Normal => entry.identity.status == ForensicStatus::Normal,
+            RecoveryFilter::All => true,
+        }
+    }
+}
 
 /// Result of comparing the reference content with the recovered content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,104 +133,195 @@ fn next_recovery_ticket_in(root: &Path) -> forensis_core::result::Result<String>
 
 /// Recovers all deleted objects from a forensic image.
 ///
-/// The flow is:
+/// This is a convenience that performs the two moments in sequence:
 ///
 /// image
-///   -> inspection
-///   -> ForensicModel
-///   -> Deleted objects
-///   -> PhysicalRecoveryEngine
-///   -> reference content
-///   -> original SHA-256
-///   -> recovery result
-///   -> recovered SHA-256
-///   -> hash comparison
+///   -> inspection (builds the ForensicModel)
+///   -> Deleted objects of the model
+///   -> recovery
 pub fn recover_deleted_files(
     image_path: impl AsRef<Path>,
     output_dir: impl AsRef<Path>,
 ) -> forensis_core::result::Result<Vec<RecoveredFile>> {
-    recover_matching_entries(image_path, output_dir, |entry| {
-        entry.identity.status == ForensicStatus::Deleted
-    })
+    let inspection = inspect_image(image_path)?;
+
+    recover_deleted_files_from_result(&inspection, output_dir, &NoProgress)
 }
 
-/// Recovers a single object by Object ID.
+/// Recovers all deleted objects from an already-built inspection result.
 ///
-/// The Object ID is searched across all forensic models
-/// produced by the investigation.
+/// The investigation is performed only once. Recovery then reuses the
+/// forensic model without re-reading filesystem metadata.
+pub fn recover_deleted_files_from_result(
+    inspection: &InspectionResult,
+    output_dir: impl AsRef<Path>,
+    reporter: &dyn ProgressReporter,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let object_ids = collect_object_ids(inspection, RecoveryFilter::Deleted);
+
+    recover_objects_from_result(inspection, &object_ids, output_dir, reporter)
+}
+
+/// Recovers all normal objects from a forensic image.
+///
+/// This convenience performs the two moments in sequence:
+///
+/// image
+///   -> inspection (builds the ForensicModel)
+///   -> Normal objects of the model
+///   -> recovery
+pub fn recover_normal_files(
+    image_path: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let inspection = inspect_image(image_path)?;
+
+    recover_normal_files_from_result(&inspection, output_dir, &NoProgress)
+}
+
+/// Recovers all normal objects from an already-built inspection result.
+///
+/// The investigation is performed only once. Recovery then reuses the
+/// forensic model without re-reading filesystem metadata.
+pub fn recover_normal_files_from_result(
+    inspection: &InspectionResult,
+    output_dir: impl AsRef<Path>,
+    reporter: &dyn ProgressReporter,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let object_ids = collect_object_ids(inspection, RecoveryFilter::Normal);
+
+    recover_objects_from_result(inspection, &object_ids, output_dir, reporter)
+}
+
+/// Recovers every selectable object from an already-built inspection
+/// result.
+///
+/// This includes objects with Deleted and Normal status. The
+/// investigation is performed only once.
+pub fn recover_all_from_result(
+    inspection: &InspectionResult,
+    output_dir: impl AsRef<Path>,
+    reporter: &dyn ProgressReporter,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let object_ids = collect_object_ids(inspection, RecoveryFilter::All);
+
+    recover_objects_from_result(inspection, &object_ids, output_dir, reporter)
+}
+
+/// Collects the Object IDs of every object matching the filter across
+/// all forensic models of the inspection result.
+fn collect_object_ids(inspection: &InspectionResult, filter: RecoveryFilter) -> Vec<u64> {
+    inspection
+        .models
+        .iter()
+        .filter_map(|model| model.as_ref())
+        .flat_map(|model| model.entries())
+        .filter(|entry| filter.matches(entry))
+        .map(|entry| entry.identity.object_id)
+        .collect()
+}
+
+/// Recovers a single object by Object ID from an already-built
+/// inspection result.
+///
+/// The Object ID is searched across all forensic models produced by
+/// the investigation.
+pub fn recover_object_from_result(
+    inspection: &InspectionResult,
+    object_id: u64,
+    output_dir: impl AsRef<Path>,
+) -> forensis_core::result::Result<RecoveredFile> {
+    let output_dir = output_dir.as_ref();
+
+    fs::create_dir_all(output_dir)?;
+
+    let (model_index, entry) = find_object(inspection, object_id).ok_or_else(|| {
+        forensis_core::error::ForensisError::InvalidFormat(format!(
+            "Forensic object with Object ID {} was not found",
+            object_id
+        ))
+    })?;
+
+    let mut reader = open_reader(inspection)?;
+
+    let engine = create_engine(inspection, model_index);
+
+    let recovery = engine.recover(&mut reader, entry)?;
+
+    finalize_recovery(output_dir, entry, recovery)
+}
+
+/// Recovers several objects by Object ID from an already-built
+/// inspection result.
+///
+/// The investigation is performed only once. Every selected object is
+/// then recovered from the same forensic model. Progress is reported
+/// per object so frontends can display "recuperando objeto i de N".
+pub fn recover_objects_from_result(
+    inspection: &InspectionResult,
+    object_ids: &[u64],
+    output_dir: impl AsRef<Path>,
+    reporter: &dyn ProgressReporter,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let output_dir = output_dir.as_ref();
+
+    fs::create_dir_all(output_dir)?;
+
+    if object_ids.is_empty() {
+        reporter.report(ProgressEvent::completed());
+
+        return Ok(Vec::new());
+    }
+
+    let mut reader = open_reader(inspection)?;
+
+    let total = object_ids.len() as u64;
+
+    let mut recovered_files = Vec::new();
+
+    for (index, object_id) in object_ids.iter().enumerate() {
+        reporter.report(ProgressEvent::new(
+            ProgressPhase::Recovering,
+            index as u64 + 1,
+            total,
+            ProgressUnit::Objects,
+        ));
+
+        let Some((model_index, entry)) = find_object(inspection, *object_id) else {
+            continue;
+        };
+
+        let engine = create_engine(inspection, model_index);
+
+        let recovery = engine.recover(&mut reader, entry)?;
+
+        recovered_files.push(finalize_recovery(output_dir, entry, recovery)?);
+    }
+
+    reporter.report(ProgressEvent::completed());
+
+    Ok(recovered_files)
+}
+
+/// Recovers a single object by Object ID from a forensic image.
+///
+/// This convenience performs the investigation and then recovers the
+/// selected object without re-reading filesystem metadata.
 pub fn recover_object(
     image_path: impl AsRef<Path>,
     object_id: u64,
     output_dir: impl AsRef<Path>,
 ) -> forensis_core::result::Result<RecoveredFile> {
-    let image_path = image_path.as_ref();
-    let output_dir = output_dir.as_ref();
-
     let inspection = inspect_image(image_path)?;
 
-    fs::create_dir_all(output_dir)?;
-
-    let image_path_string = image_path.to_string_lossy().to_string();
-
-    let mut reader = ImageReader::open(&image_path_string)?;
-
-    for (model_index, model) in inspection.models.iter().enumerate() {
-        let Some(model) = model else {
-            continue;
-        };
-
-        let Some(entry) = model
-            .entries()
-            .iter()
-            .find(|entry| entry.identity.object_id == object_id)
-        else {
-            continue;
-        };
-
-        let engine = create_engine(&inspection, model_index);
-
-        let recovery = engine.recover(&mut reader, entry)?;
-
-        if !recovery.is_recovered() {
-            return Ok(RecoveredFile {
-                entry: entry.clone(),
-                original_sha256: recovery.original_sha256.clone(),
-                recovery,
-                output_path: None,
-                recovered_sha256: None,
-                hash_comparison: HashComparison::ReferenceUnavailable,
-            });
-        }
-
-        let original_sha256 = recovery.original_sha256.clone();
-
-        let data = recovery.data().unwrap_or(&[]);
-        let recovered_sha256 = calculate_sha256(data);
-
-        let hash_comparison = compare_hashes(original_sha256.as_deref(), Some(&recovered_sha256));
-
-        let output_path = write_recovered_file(output_dir, entry, data)?;
-
-        return Ok(RecoveredFile {
-            entry: entry.clone(),
-            recovery,
-            output_path: Some(output_path),
-            recovered_sha256: Some(recovered_sha256),
-            original_sha256,
-            hash_comparison,
-        });
-    }
-
-    Err(forensis_core::error::ForensisError::InvalidFormat(format!(
-        "Forensic object with Object ID {} was not found",
-        object_id
-    )))
+    recover_object_from_result(&inspection, object_id, output_dir)
 }
 
-/// Recovers all objects with Deleted status.
+/// Recovers all selectable objects from a forensic image.
 ///
-/// This is the general recovery operation in the first
-/// implementation stage.
+/// This is the general recovery operation: every recoverable object
+/// (Deleted and Normal) is recovered without re-reading filesystem
+/// metadata.
 ///
 /// Future versions may coordinate additional methods,
 /// such as file carving.
@@ -201,83 +329,152 @@ pub fn recover_all(
     image_path: impl AsRef<Path>,
     output_dir: impl AsRef<Path>,
 ) -> forensis_core::result::Result<Vec<RecoveredFile>> {
-    recover_deleted_files(image_path, output_dir)
-}
-
-/// Implements the generic search for forensic objects.
-///
-/// The recovery layer remains independent of NTFS, EXT4,
-/// or any filesystem-specific structure.
-fn recover_matching_entries<F>(
-    image_path: impl AsRef<Path>,
-    output_dir: impl AsRef<Path>,
-    predicate: F,
-) -> forensis_core::result::Result<Vec<RecoveredFile>>
-where
-    F: Fn(&ForensicEntry) -> bool,
-{
-    let image_path = image_path.as_ref();
-    let output_dir = output_dir.as_ref();
-
     let inspection = inspect_image(image_path)?;
 
-    fs::create_dir_all(output_dir)?;
+    recover_all_from_result(&inspection, output_dir, &NoProgress)
+}
 
-    let image_path_string = image_path.to_string_lossy().to_string();
+/// Recovers several objects by Object ID from a forensic image.
+///
+/// This convenience performs the investigation and then recovers every
+/// selected object without re-reading filesystem metadata.
+pub fn recover_objects(
+    image_path: impl AsRef<Path>,
+    object_ids: &[u64],
+    output_dir: impl AsRef<Path>,
+) -> forensis_core::result::Result<Vec<RecoveredFile>> {
+    let inspection = inspect_image(image_path)?;
 
-    let mut reader = ImageReader::open(&image_path_string)?;
+    recover_objects_from_result(&inspection, object_ids, output_dir, &NoProgress)
+}
 
-    let mut recovered_files = Vec::new();
+/// Collects the recoverable candidate objects of a forensic model.
+///
+/// The tree is traversed from `root_id` down, defensively, skipping
+/// directories (navigation nodes) and keeping only objects that match
+/// the filter. Frontends (CLI and TUI) use this to build their recovery
+/// selection list from the same filesystem-independent contract.
+pub fn collect_recoverable_entries(
+    model: &ForensicModel,
+    root_id: u64,
+    filter: RecoveryFilter,
+) -> Vec<ForensicEntry> {
+    let entries = model.entries();
 
-    for (model_index, model) in inspection.models.iter().enumerate() {
-        let Some(model) = model else {
-            continue;
-        };
+    let mut children = HashMap::<u64, Vec<&ForensicEntry>>::new();
 
-        let engine = create_engine(&inspection, model_index);
-
-        for entry in model.entries() {
-            if !predicate(entry) {
-                continue;
-            }
-
-            let recovery = engine.recover(&mut reader, entry)?;
-
-            if !recovery.is_recovered() {
-                recovered_files.push(RecoveredFile {
-                    entry: entry.clone(),
-                    original_sha256: recovery.original_sha256.clone(),
-                    recovery,
-                    output_path: None,
-                    recovered_sha256: None,
-                    hash_comparison: HashComparison::ReferenceUnavailable,
-                });
-
-                continue;
-            }
-
-            let original_sha256 = recovery.original_sha256.clone();
-
-            let data = recovery.data().unwrap_or(&[]);
-            let recovered_sha256 = calculate_sha256(data);
-
-            let hash_comparison =
-                compare_hashes(original_sha256.as_deref(), Some(&recovered_sha256));
-
-            let output_path = write_recovered_file(output_dir, entry, data)?;
-
-            recovered_files.push(RecoveredFile {
-                entry: entry.clone(),
-                recovery,
-                output_path: Some(output_path),
-                recovered_sha256: Some(recovered_sha256),
-                original_sha256,
-                hash_comparison,
-            });
+    for entry in entries {
+        if let Some(parent_id) = entry.hierarchy.parent_id {
+            children.entry(parent_id).or_default().push(entry);
         }
     }
 
-    Ok(recovered_files)
+    let mut result = Vec::new();
+
+    let mut stack = vec![root_id];
+
+    /*
+     * A forensic hierarchy must be traversed defensively.
+     *
+     * Filesystem metadata can be inconsistent or corrupted.
+     * Without a visited set, a directory cycle such as
+     * A -> B -> C -> A would cause an infinite traversal.
+     */
+    let mut visited = HashSet::new();
+
+    while let Some(parent_id) = stack.pop() {
+        if !visited.insert(parent_id) {
+            continue;
+        }
+
+        let children_of_parent = match children.get(&parent_id) {
+            Some(children) => children,
+            None => continue,
+        };
+
+        for entry in children_of_parent {
+            if entry.is_directory() {
+                stack.push(entry.identity.object_id);
+                continue;
+            }
+
+            if filter.matches(entry) {
+                result.push((*entry).clone());
+            }
+        }
+    }
+
+    result.sort_by(|a, b| {
+        a.identity
+            .path
+            .to_lowercase()
+            .cmp(&b.identity.path.to_lowercase())
+    });
+
+    result
+}
+
+/// Finds an object across all models of the inspection result.
+///
+/// Returns the model index and the forensic entry. The model index is
+/// required later to build the recovery engine with the correct
+/// partition offset.
+fn find_object(inspection: &InspectionResult, object_id: u64) -> Option<(usize, &ForensicEntry)> {
+    for (model_index, model) in inspection.models.iter().enumerate() {
+        if let Some(entry) = model.as_ref().and_then(|model| model.entry(object_id)) {
+            return Some((model_index, entry));
+        }
+    }
+
+    None
+}
+
+/// Opens an image reader from the inspection result.
+fn open_reader(inspection: &InspectionResult) -> forensis_core::result::Result<ImageReader> {
+    let image_path = inspection.image.to_string_lossy().to_string();
+
+    ImageReader::open(&image_path)
+}
+
+/// Builds the final `RecoveredFile` from a recovery result.
+///
+/// A recovered object is written to the output directory and its
+/// SHA-256 digest is calculated. An object that the engine could not
+/// recover is returned without an output path.
+fn finalize_recovery(
+    output_dir: &Path,
+    entry: &ForensicEntry,
+    recovery: RecoveryResult,
+) -> forensis_core::result::Result<RecoveredFile> {
+    if !recovery.is_recovered() {
+        return Ok(RecoveredFile {
+            entry: entry.clone(),
+            original_sha256: recovery.original_sha256.clone(),
+            recovery,
+            output_path: None,
+            recovered_sha256: None,
+            hash_comparison: HashComparison::ReferenceUnavailable,
+        });
+    }
+
+    let original_sha256 = recovery.original_sha256.clone();
+
+    let data = recovery.data().unwrap_or(&[]);
+
+    let recovered_sha256 = calculate_sha256(data);
+
+    let hash_comparison = compare_hashes(original_sha256.as_deref(), Some(&recovered_sha256));
+
+    let output_path = write_recovered_file(output_dir, entry, data)?;
+
+    Ok(RecoveredFile {
+        entry: entry.clone(),
+        recovery,
+        output_path: Some(output_path),
+        recovered_sha256: Some(recovered_sha256),
+        original_sha256,
+        hash_comparison,
+    })
 }
 
 /// Creates the physical recovery engine for a partition/model.
@@ -366,6 +563,108 @@ mod tests {
     use std::fs;
 
     use super::{calculate_sha256, compare_hashes, next_recovery_ticket_in, HashComparison};
+
+    use forensis_core::forensic::{
+        ForensicAllocation, ForensicEntry, ForensicEntryKind, ForensicFilesystem,
+        ForensicHierarchy, ForensicIdentity, ForensicMetadata, ForensicModel, ForensicObject,
+        ForensicPhysicalLocation, ForensicSource, ForensicStatus,
+    };
+
+    #[test]
+    fn collect_recoverable_entries_handles_cycles_and_filters() {
+        use crate::recovery::{collect_recoverable_entries, RecoveryFilter};
+
+        let entries = vec![
+            ForensicEntry::new(
+                ForensicIdentity::new(
+                    "A",
+                    "/A",
+                    ForensicEntryKind::Directory,
+                    ForensicStatus::Normal,
+                    10,
+                ),
+                ForensicHierarchy::new(Some(30)),
+                ForensicMetadata::new(Some(0), Some(0)),
+                ForensicObject::new(ForensicFilesystem::Ntfs, 10),
+                ForensicAllocation::empty(),
+                ForensicPhysicalLocation::empty(),
+            ),
+            ForensicEntry::new(
+                ForensicIdentity::new(
+                    "B",
+                    "/A/B",
+                    ForensicEntryKind::Directory,
+                    ForensicStatus::Normal,
+                    20,
+                ),
+                ForensicHierarchy::new(Some(10)),
+                ForensicMetadata::new(Some(0), Some(0)),
+                ForensicObject::new(ForensicFilesystem::Ntfs, 20),
+                ForensicAllocation::empty(),
+                ForensicPhysicalLocation::empty(),
+            ),
+            ForensicEntry::new(
+                ForensicIdentity::new(
+                    "C",
+                    "/A/B/C",
+                    ForensicEntryKind::Directory,
+                    ForensicStatus::Normal,
+                    30,
+                ),
+                ForensicHierarchy::new(Some(20)),
+                ForensicMetadata::new(Some(0), Some(0)),
+                ForensicObject::new(ForensicFilesystem::Ntfs, 30),
+                ForensicAllocation::empty(),
+                ForensicPhysicalLocation::empty(),
+            ),
+            ForensicEntry::new(
+                ForensicIdentity::new(
+                    "deleted.txt",
+                    "/A/deleted.txt",
+                    ForensicEntryKind::File,
+                    ForensicStatus::Deleted,
+                    40,
+                ),
+                ForensicHierarchy::new(Some(10)),
+                ForensicMetadata::new(Some(10), Some(10)),
+                ForensicObject::new(ForensicFilesystem::Ntfs, 40),
+                ForensicAllocation::empty(),
+                ForensicPhysicalLocation::empty(),
+            ),
+            ForensicEntry::new(
+                ForensicIdentity::new(
+                    "live.txt",
+                    "/A/live.txt",
+                    ForensicEntryKind::File,
+                    ForensicStatus::Normal,
+                    50,
+                ),
+                ForensicHierarchy::new(Some(10)),
+                ForensicMetadata::new(Some(10), Some(10)),
+                ForensicObject::new(ForensicFilesystem::Ntfs, 50),
+                ForensicAllocation::empty(),
+                ForensicPhysicalLocation::empty(),
+            ),
+        ];
+
+        let model = ForensicModel::new(
+            ForensicSource::new(None, ForensicFilesystem::Ntfs),
+            4,
+            entries,
+        );
+
+        let deleted = collect_recoverable_entries(&model, 10, RecoveryFilter::Deleted);
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].identity.object_id, 40);
+
+        let normal = collect_recoverable_entries(&model, 10, RecoveryFilter::Normal);
+        assert_eq!(normal.len(), 1);
+        assert_eq!(normal[0].identity.object_id, 50);
+
+        let all = collect_recoverable_entries(&model, 10, RecoveryFilter::All);
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|entry| !entry.is_directory()));
+    }
 
     #[test]
     fn calculate_sha256_returns_expected_digest() {

@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 forensis-app = { path = "../forensis-app" }
+forensis-core = { path = "../forensis-core" }
 
 anyhow.workspace = true
 ratatui.workspace = true

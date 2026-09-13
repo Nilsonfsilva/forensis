@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod platform;
+pub mod progress;
 pub mod result;
 pub mod traits;
 pub mod types;
@@ -18,6 +19,8 @@ pub mod source;
 pub use error::ForensisError;
 pub use platform::{Architecture, Platform};
 pub use result::Result;
+
+pub use progress::{NoProgress, ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit};
 
 pub use traits::{PartitionTableReader, Readable};
 

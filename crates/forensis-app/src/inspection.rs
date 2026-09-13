@@ -4,6 +4,7 @@ use forensis_core::{
     disk::ImageReader,
     filesystem::{FileSystemDetector, FileSystemType},
     forensic::{ForensicModel, ForensicTree},
+    progress::{NoProgress, ProgressReporter},
     Partition, PartitionTableDetector, PartitionTableReader, PartitionTableType, Readable,
 };
 
@@ -26,6 +27,7 @@ fn inspect_filesystem<R: Readable>(
     partition: Option<&Partition>,
     offset: u64,
     image_source: Option<String>,
+    reporter: &dyn ProgressReporter,
 ) -> Result<(Option<ForensicModel>, Option<ForensicTree>)> {
     let model: ForensicModel = match filesystem {
         FileSystemType::Ntfs => {
@@ -34,7 +36,7 @@ fn inspect_filesystem<R: Readable>(
                 None => FileSystemDetector::open_ntfs_at(reader, offset)?,
             };
 
-            let investigation = ntfs.investigate(reader)?;
+            let investigation = ntfs.investigate_with_progress(reader, reporter)?;
 
             investigation.to_forensic_model(image_source)
         }
@@ -53,7 +55,7 @@ fn inspect_filesystem<R: Readable>(
             let mut ext4_reader =
                 forensis_core::filesystem::ext4::Ext4Reader::new(&mut *reader, partition_offset);
 
-            let investigation = ext4.investigate(&mut ext4_reader)?;
+            let investigation = ext4.investigate_with_progress(&mut ext4_reader, reporter)?;
 
             investigation.to_forensic_model(image_source)
         }
@@ -72,7 +74,26 @@ fn inspect_filesystem<R: Readable>(
             let mut fat32_reader =
                 forensis_core::filesystem::fat32::Fat32Reader::new(&mut *reader, partition_offset)?;
 
-            let investigation = fat32.investigate(&mut fat32_reader)?;
+            let investigation = fat32.investigate_with_progress(&mut fat32_reader, reporter)?;
+
+            investigation.to_forensic_model(image_source)
+        }
+
+        FileSystemType::ExFat => {
+            let exfat = match partition {
+                Some(partition) => FileSystemDetector::open_exfat(reader, partition)?,
+                None => FileSystemDetector::open_exfat_at(reader, offset)?,
+            };
+
+            let partition_offset = match partition {
+                Some(partition) => partition.start_sector * 512,
+                None => offset,
+            };
+
+            let mut exfat_reader =
+                forensis_core::filesystem::exfat::ExFatReader::new(&mut *reader, partition_offset)?;
+
+            let investigation = exfat.investigate_with_progress(&mut exfat_reader, reporter)?;
 
             investigation.to_forensic_model(image_source)
         }
@@ -110,11 +131,29 @@ pub struct InspectionResult {
     ///
     /// The tree is built exclusively from the
     /// ForensicModel and does not depend on NTFS, EXT4,
-    /// FAT32 or any other filesystem.
+    /// FAT32, exFAT or any other filesystem.
     pub trees: Vec<Option<ForensicTree>>,
 }
 
+/// Investigates an image without progress reporting.
+///
+/// This preserves the original application API. Internally it
+/// uses `NoProgress`, so existing CLI, TUI, recovery code, and
+/// tests continue to work without modification.
 pub fn inspect_image(path: impl AsRef<Path>) -> Result<InspectionResult> {
+    inspect_image_with_progress(path, &NoProgress)
+}
+
+/// Investigates an image and reports filesystem investigation
+/// progress through the supplied reporter.
+///
+/// The application layer transports progress events but does not
+/// decide how they are rendered. CLI and TUI are responsible for
+/// presentation.
+pub fn inspect_image_with_progress(
+    path: impl AsRef<Path>,
+    reporter: &dyn ProgressReporter,
+) -> Result<InspectionResult> {
     let path = path.as_ref();
 
     let path_string = path.to_string_lossy();
@@ -241,6 +280,7 @@ pub fn inspect_image(path: impl AsRef<Path>) -> Result<InspectionResult> {
                 Some(partition),
                 0,
                 image_source.clone(),
+                reporter,
             )?;
 
             models.push(model);
@@ -280,8 +320,14 @@ pub fn inspect_image(path: impl AsRef<Path>) -> Result<InspectionResult> {
              * The supported whole-image filesystem is investigated
              * by the same common helper used for partitions.
              */
-            let (model, tree) =
-                inspect_filesystem(filesystem, &mut reader, None, 0, image_source.clone())?;
+            let (model, tree) = inspect_filesystem(
+                filesystem,
+                &mut reader,
+                None,
+                0,
+                image_source.clone(),
+                reporter,
+            )?;
 
             models.push(model);
             trees.push(tree);

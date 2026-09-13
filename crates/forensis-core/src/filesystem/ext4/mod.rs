@@ -34,7 +34,9 @@ pub use inode::Ext4Inode;
 pub use inode_bitmap::Ext4InodeBitmap;
 pub use inode_locator::Ext4InodeLocator;
 pub use inode_table::Ext4InodeTable;
-pub use investigation::{investigate_filesystem, Ext4Investigation, ROOT_INODE};
+pub use investigation::{
+    investigate_filesystem, investigate_filesystem_with_progress, Ext4Investigation, ROOT_INODE,
+};
 pub use investigation_entry::Ext4InvestigationEntry;
 pub use journal::Ext4Journal;
 pub use reader::Ext4Reader;

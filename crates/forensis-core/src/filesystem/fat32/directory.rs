@@ -192,6 +192,29 @@ fn lfn_slot_units(slot: &[u8]) -> Vec<u16> {
     units
 }
 
+/// Returns true when the display name is a plausible FAT leaf name.
+///
+/// A real directory entry carries a printable name (ASCII graphic plus
+/// normally-encoded UTF-16). When the fingerprinted name is mostly
+/// binary — the signature of a damaged or recycled directory cluster
+/// being read as if it were a valid slot sequence — the entry is
+/// discarded instead of polluting the laudo with false positives.
+pub fn is_plausible_leaf_name(name: &str) -> bool {
+    if name.is_empty() || name.chars().any(|c| c == '\0') {
+        return false;
+    }
+
+    let mut printable = 0u64;
+    let mut total = 0u64;
+    for c in name.chars() {
+        total += 1;
+        if !c.is_control() && !c.is_whitespace() {
+            printable += 1;
+        }
+    }
+    printable as f64 / total as f64 >= 0.7
+}
+
 /// Parses all directory slots contained in `buffer`.
 ///
 /// The function stops at the first zero entry (directory end). Deleted
@@ -209,6 +232,8 @@ pub fn parse_directory_entries(buffer: &[u8]) -> Vec<Fat32DirectoryEntry> {
     while offset + 32 <= buffer.len() {
         let slot = &buffer[offset..offset + 32];
 
+        offset += 32;
+
         let first = slot[0];
 
         if first == END_MARK {
@@ -222,13 +247,17 @@ pub fn parse_directory_entries(buffer: &[u8]) -> Vec<Fat32DirectoryEntry> {
         } else {
             let name = build_leaf_name(slot, &lfn_units, lfn_has_pending);
 
+            if !is_plausible_leaf_name(&name) {
+                lfn_units.clear();
+                lfn_has_pending = false;
+                continue;
+            }
+
             append_leaf_entry(&mut entries, slot, name);
 
             lfn_units.clear();
             lfn_has_pending = false;
         }
-
-        offset += 32;
     }
 
     entries
@@ -253,6 +282,42 @@ fn build_leaf_name(slot: &[u8], lfn_units: &[u16], lfn_has_pending: bool) -> Str
     } else {
         short_name_with_placeholder(&short, deleted)
     }
+}
+
+/// Returns true when `buffer` plausibly holds the start of a FAT32
+/// directory: the first few slots must contain the "." and ".." self
+/// entries (whose leading byte becomes `0xE5` once the directory is
+/// deleted).
+///
+/// The gate is used before walking a recorded chain: recycled data
+/// clusters occasionally carry a slot whose attribute byte happens to
+/// have the directory bit (0x10) set. Following their chain would
+/// otherwise read gigabytes of leftover file payload.
+pub fn has_directory_markers(buffer: &[u8]) -> bool {
+    for slot in buffer.chunks(32).take(3) {
+        if slot.len() < 32 {
+            break;
+        }
+
+        let first = slot[0];
+
+        if first == END_MARK {
+            break;
+        }
+
+        let mut name = [0u8; 11];
+        name.copy_from_slice(&slot[0..11]);
+
+        if first == DELETED_FIRST_BYTE {
+            name[0] = b'.';
+        }
+
+        if &name == b".          " || &name == b"..         " {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Copies the 11 raw name bytes, restoring the deleted first byte into
@@ -537,6 +602,19 @@ mod tests {
 
         assert_eq!(entries[0].name(), "?RQ.BIN");
         assert!(entries[0].is_deleted());
+    }
+
+    #[test]
+    fn binary_directory_slots_do_not_loop_infinitely() {
+        let mut buffer = vec![0u8; 16384];
+
+        for chunk in buffer.chunks_exact_mut(32) {
+            chunk.fill(0x01);
+        }
+
+        let entries = parse_directory_entries(&buffer);
+
+        assert!(entries.len() <= buffer.len() / 32);
     }
 
     #[test]
