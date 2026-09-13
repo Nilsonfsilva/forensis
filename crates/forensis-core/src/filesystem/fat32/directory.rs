@@ -192,6 +192,29 @@ fn lfn_slot_units(slot: &[u8]) -> Vec<u16> {
     units
 }
 
+/// Returns true when the display name is a plausible FAT leaf name.
+///
+/// A real directory entry carries a printable name (ASCII graphic plus
+/// normally-encoded UTF-16). When the fingerprinted name is mostly
+/// binary — the signature of a damaged or recycled directory cluster
+/// being read as if it were a valid slot sequence — the entry is
+/// discarded instead of polluting the laudo with false positives.
+pub fn is_plausible_leaf_name(name: &str) -> bool {
+    if name.is_empty() || name.chars().any(|c| c == '\0') {
+        return false;
+    }
+
+    let mut printable = 0u64;
+    let mut total = 0u64;
+    for c in name.chars() {
+        total += 1;
+        if !c.is_control() && !c.is_whitespace() {
+            printable += 1;
+        }
+    }
+    printable as f64 / total as f64 >= 0.7
+}
+
 /// Parses all directory slots contained in `buffer`.
 ///
 /// The function stops at the first zero entry (directory end). Deleted
@@ -221,6 +244,12 @@ pub fn parse_directory_entries(buffer: &[u8]) -> Vec<Fat32DirectoryEntry> {
             lfn_has_pending = true;
         } else {
             let name = build_leaf_name(slot, &lfn_units, lfn_has_pending);
+
+            if !is_plausible_leaf_name(&name) {
+                lfn_units.clear();
+                lfn_has_pending = false;
+                continue;
+            }
 
             append_leaf_entry(&mut entries, slot, name);
 

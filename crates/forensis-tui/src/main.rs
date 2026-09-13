@@ -2533,6 +2533,24 @@ fn build_details(entry: &ForensicEntry) -> Vec<Line<'static>> {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
 
+    let created_at = entry
+        .metadata
+        .created_at
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+
+    let modified_at = entry
+        .metadata
+        .modified_at
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+
+    let accessed_at = entry
+        .metadata
+        .accessed_at
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+
     vec![
         Line::from(vec![Span::styled(
             entry.identity.name.clone(),
@@ -2553,6 +2571,10 @@ fn build_details(entry: &ForensicEntry) -> Vec<Line<'static>> {
         detail_line("Real size", &real_size, Color::White),
         detail_line("Allocated size", &allocated_size, Color::White),
         detail_line("Allocated", &allocated, Color::White),
+        Line::from(""),
+        detail_line("Created", &created_at, Color::White),
+        detail_line("Modified", &modified_at, Color::White),
+        detail_line("Accessed", &accessed_at, Color::White),
         Line::from(""),
         detail_line(
             "Filesystem",
