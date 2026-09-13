@@ -181,6 +181,7 @@ mod tests {
     }
 
     /// Builds an extent header plus one extent entry.
+    #[allow(clippy::identity_op)]
     fn flat_tree(extents: &[(u32, u32, u16)]) -> Vec<u8> {
         let mut data = vec![0u8; Ext4ExtentHeader::SIZE + extents.len() * Ext4Extent::SIZE];
 

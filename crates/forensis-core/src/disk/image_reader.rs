@@ -56,9 +56,7 @@ fn block_device_size(path: &Path) -> Result<u64> {
 
     let device_name = canonical_path
         .file_name()
-        .ok_or_else(|| {
-            ForensisError::Generic("Unable to determine the device name.".to_string())
-        })?
+        .ok_or_else(|| ForensisError::Generic("Unable to determine the device name.".to_string()))?
         .to_string_lossy();
 
     let sysfs_path = Path::new("/sys/class/block")

@@ -11,15 +11,26 @@ but `is_supported()` gates which ones can actually be investigated:
 
 | Filesystem | Detected | Investigated |
 | --- | --- | --- |
-| NTFS | yes | **yes (today)** |
-| EXT4 | yes | no — parsers exist, not wired |
-| FAT32 | yes | no — empty module |
+| NTFS | yes | **yes** |
+| EXT4 | yes | **yes** |
+| FAT32 | yes | **yes (today)** |
 | exFAT | yes | no — empty module |
 | XFS | yes | no |
 | BTRFS | yes | no |
 | HFS+ | yes | no |
 | APFS | yes | no |
 | EXT3 | not detected yet | no |
+
+## FAT32 — done
+
+Fat32 investigation and recovery (`crates/forensis-core/src/filesystem/fat32/`)
+are implemented and validated against a real fixture in `lab/fat32-validation/`
+and its MBR-partitioned variant. The FAT layer answers the same six
+questions below with a reserved FAT region plus linked directory entries.
+Deleted entries keep the `0xE5` marker, the recorded size and the start
+cluster; recovery follows the residual cluster chain when it survives
+(the artifact this implementation targets) as documented in
+[validation-fixtures.md](validation-fixtures.md).
 
 ## NTFS — done
 
@@ -48,9 +59,9 @@ the block bitmap gives the same allocated-vs-free signal used to detect
 deleted objects. This is the natural second filesystem because it answers
 the same six questions as NTFS with different structures.
 
-## Later: FAT32, exFAT, EXT3
+## Later: exFAT, EXT3
 
-- `fat32/mod.rs` and `exfat/mod.rs` are currently near-empty modules.
+- `exfat/mod.rs` is a near-empty module.
 - EXT3 detection and parsing inherit most of the EXT4 machinery and can
   reuse its inode/journal code as a starting point.
 

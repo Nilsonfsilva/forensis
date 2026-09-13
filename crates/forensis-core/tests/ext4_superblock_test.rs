@@ -22,8 +22,7 @@ fn parses_valid_superblock() {
     // 256-byte inode.
     data[0x58..0x5A].copy_from_slice(&256u16.to_le_bytes());
 
-    let superblock =
-        Ext4Superblock::parse(&data).expect("valid EXT4 superblock should parse");
+    let superblock = Ext4Superblock::parse(&data).expect("valid EXT4 superblock should parse");
 
     assert_eq!(superblock.magic(), Ext4Superblock::EXT4_MAGIC);
     assert_eq!(superblock.inodes_count(), 1000);
@@ -77,8 +76,7 @@ fn calculates_block_size() {
     data[0x18..0x1C].copy_from_slice(&2u32.to_le_bytes());
     data[0x58..0x5A].copy_from_slice(&256u16.to_le_bytes());
 
-    let superblock =
-        Ext4Superblock::parse(&data).expect("valid EXT4 superblock should parse");
+    let superblock = Ext4Superblock::parse(&data).expect("valid EXT4 superblock should parse");
 
     assert_eq!(superblock.block_size(), 4096);
 }

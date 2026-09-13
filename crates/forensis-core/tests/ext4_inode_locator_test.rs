@@ -1,8 +1,4 @@
-use forensis_core::filesystem::ext4::{
-    Ext4BlockGroupDescriptor,
-    Ext4InodeLocator,
-    Ext4Superblock,
-};
+use forensis_core::filesystem::ext4::{Ext4BlockGroupDescriptor, Ext4InodeLocator, Ext4Superblock};
 
 fn build_superblock() -> Ext4Superblock {
     let mut data = [0u8; Ext4Superblock::SIZE];
@@ -33,15 +29,13 @@ fn build_descriptor(inode_table: u64) -> Ext4BlockGroupDescriptor {
 
     data[0x08..0x10].copy_from_slice(&inode_table.to_le_bytes());
 
-    Ext4BlockGroupDescriptor::parse(&data)
-        .expect("valid EXT4 block group descriptor should parse")
+    Ext4BlockGroupDescriptor::parse(&data).expect("valid EXT4 block group descriptor should parse")
 }
 
 fn build_locator() -> Ext4InodeLocator {
     let superblock = build_superblock();
 
-    Ext4InodeLocator::new(superblock, 256)
-        .expect("valid EXT4 inode locator should be created")
+    Ext4InodeLocator::new(superblock, 256).expect("valid EXT4 inode locator should be created")
 }
 
 #[test]

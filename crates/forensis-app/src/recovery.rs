@@ -65,23 +65,18 @@ pub fn next_recovery_ticket() -> forensis_core::result::Result<String> {
 /// This helper is separated from `next_recovery_ticket` so tests can
 /// use an isolated temporary directory without touching the real
 /// recovery ticket counter.
-fn next_recovery_ticket_in(
-    root: &Path,
-) -> forensis_core::result::Result<String> {
+fn next_recovery_ticket_in(root: &Path) -> forensis_core::result::Result<String> {
     fs::create_dir_all(root)?;
 
     let ticket_path = root.join(".ticket");
 
     let last = match fs::read_to_string(&ticket_path) {
-        Ok(contents) => contents
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| {
-                forensis_core::error::ForensisError::InvalidFormat(format!(
-                    "Invalid recovery ticket counter in {}",
-                    ticket_path.display()
-                ))
-            })?,
+        Ok(contents) => contents.trim().parse::<u64>().map_err(|_| {
+            forensis_core::error::ForensisError::InvalidFormat(format!(
+                "Invalid recovery ticket counter in {}",
+                ticket_path.display()
+            ))
+        })?,
 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
 
@@ -175,8 +170,7 @@ pub fn recover_object(
         let data = recovery.data().unwrap_or(&[]);
         let recovered_sha256 = calculate_sha256(data);
 
-        let hash_comparison =
-            compare_hashes(original_sha256.as_deref(), Some(&recovered_sha256));
+        let hash_comparison = compare_hashes(original_sha256.as_deref(), Some(&recovered_sha256));
 
         let output_path = write_recovered_file(output_dir, entry, data)?;
 
@@ -312,14 +306,9 @@ fn calculate_sha256(data: &[u8]) -> String {
 }
 
 /// Compares a reference SHA-256 digest with a recovered SHA-256 digest.
-fn compare_hashes(
-    original_sha256: Option<&str>,
-    recovered_sha256: Option<&str>,
-) -> HashComparison {
+fn compare_hashes(original_sha256: Option<&str>, recovered_sha256: Option<&str>) -> HashComparison {
     match (original_sha256, recovered_sha256) {
-        (Some(original), Some(recovered)) if original == recovered => {
-            HashComparison::Identical
-        }
+        (Some(original), Some(recovered)) if original == recovered => HashComparison::Identical,
 
         (Some(_), Some(_)) => HashComparison::Different,
 
@@ -352,18 +341,11 @@ fn write_recovered_file(
             .and_then(|value| value.to_str())
             .unwrap_or("recovered_file");
 
-        let extension = original
-            .extension()
-            .and_then(|value| value.to_str());
+        let extension = original.extension().and_then(|value| value.to_str());
 
         let unique_name = match extension {
             Some(extension) => {
-                format!(
-                    "{}_{}.{}",
-                    stem,
-                    entry.identity.object_id,
-                    extension
-                )
+                format!("{}_{}.{}", stem, entry.identity.object_id, extension)
             }
 
             None => {
@@ -383,12 +365,7 @@ fn write_recovered_file(
 mod tests {
     use std::fs;
 
-    use super::{
-        calculate_sha256,
-        compare_hashes,
-        next_recovery_ticket_in,
-        HashComparison,
-    };
+    use super::{calculate_sha256, compare_hashes, next_recovery_ticket_in, HashComparison};
 
     #[test]
     fn calculate_sha256_returns_expected_digest() {

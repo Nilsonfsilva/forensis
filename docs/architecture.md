@@ -24,11 +24,9 @@ interfaces e o código que conversa com os bytes.
 | `forensis-cli` | Interface de linha de comando, binário `forensis`. |
 | `forensis-tui` | Interface de terminal, binário `forensis-tui`. |
 
-> Alvo futuro: o `Cargo.toml` já declara crates comentados
-> (`forensis-disk`, `forensis-filesystem`, `forensis-fs-ntfs`,
-> `forensis-fs-ext4`, `forensis-fs-fat32`, `forensis-carving`,
-> `forensis-report`, `forensis-hash`). Cada um desses crates corresponde a
-> uma camada deste mapa; hoje tudo vive em `forensis-core`.
+> Toda a lógica (disco, partição, filesystems, modelo forense e recuperação)
+> vive hoje em `forensis-core`; uma modularização futura poderia dividi-lo em
+> crates por camada.
 
 ## Mapa-mãe: como o byte atravessa as camadas
 
@@ -94,7 +92,7 @@ vizinha** — embaixo o `Readable` (bytes), em cima o `ForensicModel`
 | --- | --- | --- | --- |
 | V1 | **Subida vertical** (bytes → modelo) | `image_reader` → `investigation::to_forensic_model` | Cada camada sobe um degrau de abstração: bytes → partições → tipo de FS → geometria → MFT → registros → modelo. |
 | H1 | **Horizontal: MBR \| GPT** | `partition/partition_table.rs` | Duas implementações irmãs escondidas atrás do enum `PartitionTable`; o `PartitionTableDetector` escolhe a fila e o consumidor só vê `Vec<Partition>`. |
-| H2 | **Horizontal: NTFS \| EXT4 \| FAT32 \| exFAT** | `filesystem/detector.rs` + `filesystem/<fs>/` | O detector abre um leque: cada filesystem é uma irmã que lê do mesmo `Readable` e **deve produzir o mesmo `ForensicModel`**. Hoje só NTFS tem `is_supported() == true`. |
+| H2 | **Horizontal: NTFS \| EXT4 \| FAT32 \| exFAT** | `filesystem/detector.rs` + `filesystem/<fs>/` | O detector abre um leque: cada filesystem é uma irmã que lê do mesmo `Readable` e **deve produzir o mesmo `ForensicModel`**. NTFS, EXT4 e FAT32 têm `is_supported() == true`. |
 | H3 | **Horizontal interno ao NTFS** | `ntfs/mft_parser.rs` | Um registro MFT é um leque de atributos: `$STANDARD_INFORMATION`, `$FILE_NAME`, `$DATA`, `$INDEX_ROOT`/`$INDEX_ALLOCATION` — cada um parseado por um arquivo irmão. |
 | V2 | **Subida vertical (final)** | `forensic/model.rs` + `forensic/tree.rs` | Depois do modelo, app e interfaces só consomem `ForensicEntry`/`ForensicTree`. A aplicação nunca mais vê estruturas NTFS. |
 | H4 | **Horizontal: CLI × TUI** | `forensis-cli/`, `forensis-tui/` | Interfaces irmãs que chamam o mesmo `app::{discover_sources, inspect_image, recover_*, next_recovery_ticket}`. |
@@ -243,42 +241,35 @@ para virar conteúdo.
 segmentos) preserva a ordem original dos bytes, mesmo que os runs
 físicos estejam espalhados.
 
-## Guia de extensão: ext4 / ext3 / fat32 / exfat
+## Guia de extensão: exfat / ext3
 
 Como o fluxo é vertical com dois leques horizontais, adicionar um
 filesystem toca apenas os 4 pontos abaixo — tudo que fica **acima** do
 modelo (app recovery + interfaces) não muda:
 
 1. **Detecção** — `filesystem/detector.rs::detect_at`:
-   - ext4 já lê o superblock (1024 B em `offset+1024`, magic `0xEF53`);
+   - exFAT precisa da assinatura `"EXFAT   "` em `[3..11]` do boot sector
+     (exFAT não tem superblock análogo ao ext — é 100% boot sector);
+   - ext3 compartilha o mesmo superblock do ext4 (magic `0xEF53`);
      para separar ext3 de ext4 use os campos de *features*
-     (`compat/ro_compat`); ext3 compartilha o mesmo superblock (magic +
-     feature legality);
-   - FAT32 já é reconhecido (`"FAT32"`); exFAT precisa do assinatura
-     `"EXFAT   "` em `[3..11]` do boot sector;
-   - exFAT não tem superblock análogo ao ext — é 100% boot sector.
+     (`compat/ro_compat`).
 2. **Gate de suporte** — `FileSystemType::is_supported()`: habilitar o
-   novo `Self::Ext4`/`Fat32`/`ExFat` (hoje `matches!(self, Self::Ntfs)`).
+   novo `Self::ExFat` (hoje `matches!(self, Self::Ntfs | Self::Ext4 | Self::Fat32)`).
 3. **Ponto de plug no pipeline** — `app/inspection.rs`, nos dois
    `match filesystem` (caso com partição, linhas ~153, e sem partição,
-   linhas ~228): adicionar `FileSystemType::Ext4 => { ... }` seguindo o
-   padrão NTFS (abrir → investigar → `to_forensic_model` → tree).
+   linhas ~228): adicionar `FileSystemType::ExFat => { ... }` seguindo o
+   padrão dos existentes (abrir → investigar → `to_forensic_model` → tree).
 4. **O parser irmão** — `filesystem/<fs>/` deve espelhar
    `ntfs/boot_sector.rs + investigation.rs`:
    - ter um `XxxFileSystem::parse(reader, partition_offset)` que leia a
-     geometria (para ext4: superblock → `block_size`, `inodes_per_group`,
-     contagem de grupos; `Ext4Reader` já existe e faz isso);
-   - produzir uma investigação própria (ext4: inode table + directory
-     entries; para isto já existe `inode_locator`, `inode_table`,
-     `inode`, `directory`, `extent`, bitmaps);
-   - terminar em `to_forensic_model(image)` emitindo `ForensicEntry` **com
-     `content_layout`** (segments `Physical`/`Sparse`/`Inline`). Para
-     ext4, o análogo do LCN é o bloco: `partition_offset + block*block_size`;
-     sparse ext4 = nanão de extents/`i_size` vs. blocks alocados.
+     geometria;
+   - produzir uma investigação própria terminando em
+     `to_forensic_model(image)` emitindo `ForensicEntry` **com
+     `content_layout`** (segments `Physical`/`Sparse`/`Inline`).
 
 O `PhysicalRecoveryEngine` **não precisa de mudanças**: ele só conhece os
-segments do `content_layout`. Os arquivos do catálogo em
-`filesystem/ext4/` já existem como arcabouço (não ligados ao pipeline).
+segments do `content_layout`. Use `fat32/` como o modelo de referência
+(é a implementação mais recente e completa de um "parser irmão").
 
 ## Design principles
 

@@ -1,10 +1,6 @@
 use forensis_core::filesystem::ext4::Ext4ExtentIndex;
 
-fn build_index(
-    logical_block: u32,
-    leaf_high: u16,
-    leaf_low: u32,
-) -> [u8; 12] {
+fn build_index(logical_block: u32, leaf_high: u16, leaf_low: u32) -> [u8; 12] {
     let mut data = [0u8; 12];
 
     data[0x00..0x04].copy_from_slice(&logical_block.to_le_bytes());

@@ -10,8 +10,8 @@ analysis and recovery of digital evidence directly from disk bytes.
   representation that parsers produce and recovery consumes.
 - [Recovery](recovery.md) — the physical recovery engine and its
   integrity guarantees.
-- [Filesystem roadmap](filesystem-roadmap.md) — NTFS today; ext4,
-  ext3, FAT32 and exFAT next.
+- [Filesystem roadmap](filesystem-roadmap.md) — NTFS, ext4 and FAT32
+  today; exFAT and ext3 next.
 
 ## NTFS study
 
@@ -26,6 +26,10 @@ analysis and recovery of digital evidence directly from disk bytes.
 - [Contributing guide](../CONTRIBUTING.md) — building, testing and
   adding a filesystem.
 
+## Releases
+
+- [Changelog](../CHANGELOG.md) — record of changes per release.
+
 ## Index
 
 | Document | Audience |
@@ -36,4 +40,6 @@ analysis and recovery of digital evidence directly from disk bytes.
 | [ntfs/guide.md](ntfs/guide.md) | Anyone learning NTFS |
 | [ntfs/implementation.md](ntfs/implementation.md) | Contributors to the NTFS module |
 | [filesystem-roadmap.md](filesystem-roadmap.md) | Maintainers, contributors |
+| [validation-fixtures.md](validation-fixtures.md) | Maintainers, contributors |
+| [../CHANGELOG.md](../CHANGELOG.md) | Maintainers, users |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | New contributors |

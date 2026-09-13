@@ -58,6 +58,25 @@ fn inspect_filesystem<R: Readable>(
             investigation.to_forensic_model(image_source)
         }
 
+        FileSystemType::Fat32 => {
+            let fat32 = match partition {
+                Some(partition) => FileSystemDetector::open_fat32(reader, partition)?,
+                None => FileSystemDetector::open_fat32_at(reader, offset)?,
+            };
+
+            let partition_offset = match partition {
+                Some(partition) => partition.start_sector * 512,
+                None => offset,
+            };
+
+            let mut fat32_reader =
+                forensis_core::filesystem::fat32::Fat32Reader::new(&mut *reader, partition_offset)?;
+
+            let investigation = fat32.investigate(&mut fat32_reader)?;
+
+            investigation.to_forensic_model(image_source)
+        }
+
         /*
          * Unsupported filesystems never reach this helper because
          * detection is always checked with `is_supported()` first.

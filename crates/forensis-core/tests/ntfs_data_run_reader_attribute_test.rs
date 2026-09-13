@@ -1,9 +1,15 @@
+use std::path::Path;
+
 use forensis_core::filesystem::ntfs::{DataAttribute, DataRun, DataRunReader};
 
 use forensis_core::image_reader::ImageReader;
 
 fn test_image_path() -> String {
-    format!("{}/../../lab/ntfs/disk.img", env!("CARGO_MANIFEST_DIR"),)
+    format!("{}/../../lab/ntfs/disk.img", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn image_available() -> bool {
+    Path::new(&test_image_path()).exists()
 }
 
 #[test]
@@ -19,6 +25,11 @@ fn test_read_resident_attribute() {
     let reader = DataRunReader::new(0, 4096);
 
     let image_path = test_image_path();
+
+    if !image_available() {
+        eprintln!("skipping: lab/ntfs/disk.img not available");
+        return;
+    }
 
     let mut image = ImageReader::open(&image_path).unwrap();
 
@@ -43,6 +54,11 @@ fn test_read_non_resident_attribute() {
     let reader = DataRunReader::new(0, 4096);
 
     let image_path = test_image_path();
+
+    if !image_available() {
+        eprintln!("skipping: lab/ntfs/disk.img not available");
+        return;
+    }
 
     let mut image = ImageReader::open(&image_path).unwrap();
 

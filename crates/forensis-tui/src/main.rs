@@ -1105,11 +1105,9 @@ fn handle_recovery_save(app: &mut AppState, key: KeyCode) -> Result<()> {
             app.status = "Save operation cancelled.".to_string();
         }
 
-        KeyCode::Char(c) => {
-            if !c.is_control() {
-                if let Some(recovery) = app.recovery.as_mut() {
-                    recovery.work_name.push(c);
-                }
+        KeyCode::Char(c) if !c.is_control() => {
+            if let Some(recovery) = app.recovery.as_mut() {
+                recovery.work_name.push(c);
             }
         }
 
@@ -1120,42 +1118,39 @@ fn handle_recovery_save(app: &mut AppState, key: KeyCode) -> Result<()> {
 }
 
 fn save_recovery_work(app: &mut AppState) -> Result<()> {
-let (ticket, working_dir) = {
-let recovery = match &app.recovery {
-Some(recovery) => recovery,
-None => return Ok(()),
-};
+    let (ticket, working_dir) = {
+        let recovery = match &app.recovery {
+            Some(recovery) => recovery,
+            None => return Ok(()),
+        };
 
+        let working_dir = recovery.output_dir.clone().unwrap_or_else(|| {
+            PathBuf::from("forensis-recovery").join(format!(".working-{}", recovery.ticket))
+        });
 
-    let working_dir = recovery.output_dir.clone().unwrap_or_else(|| {
-        PathBuf::from("forensis-recovery").join(format!(".working-{}", recovery.ticket))
-    });
+        (recovery.ticket.clone(), working_dir)
+    };
 
-    (recovery.ticket.clone(), working_dir)
-};
+    fs::create_dir_all(&working_dir)?;
 
-fs::create_dir_all(&working_dir)?;
+    let final_dir =
+        PathBuf::from("forensis-recovery").join(format!("forensis-recovery-tui-{}", ticket));
 
-let final_dir =
-    PathBuf::from("forensis-recovery").join(format!("forensis-recovery-tui-{}", ticket));
+    if final_dir.exists() {
+        app.status = format!("Recovery work already exists: {}", final_dir.display());
+        return Ok(());
+    }
 
-if final_dir.exists() {
-    app.status = format!("Recovery work already exists: {}", final_dir.display());
-    return Ok(());
-}
+    fs::rename(&working_dir, &final_dir)?;
 
-fs::rename(&working_dir, &final_dir)?;
+    if let Some(recovery) = app.recovery.as_mut() {
+        recovery.output_dir = Some(final_dir.clone());
+    }
 
-if let Some(recovery) = app.recovery.as_mut() {
-    recovery.output_dir = Some(final_dir.clone());
-}
+    app.source_mode = SourceMode::Recovery;
+    app.status = format!("Recovery work saved to {}.", final_dir.display());
 
-app.source_mode = SourceMode::Recovery;
-app.status = format!("Recovery work saved to {}.", final_dir.display());
-
-Ok(())
-
-
+    Ok(())
 }
 
 fn handle_filesystem_inspection(app: &mut AppState, key: KeyCode) -> Result<()> {
@@ -1883,44 +1878,41 @@ fn build_processed_recovery_details(file: &RecoveredFile) -> Vec<Line<'static>> 
 }
 
 fn draw_recovery_save(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {
-let recovery = match &app.recovery {
-Some(recovery) => recovery,
-None => return,
-};
+    let recovery = match &app.recovery {
+        Some(recovery) => recovery,
+        None => return,
+    };
 
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            "SAVE RECOVERY WORK",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        detail_line("Ticket", &recovery.ticket, Color::Green),
+        detail_line("Scope", &recovery.scope_path, Color::Cyan),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Press Enter to save the recovery work.",
+            Style::default().fg(Color::Gray),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.status.clone(),
+            Style::default().fg(Color::Yellow),
+        )]),
+    ];
 
-let lines = vec![
-    Line::from(vec![Span::styled(
-        "SAVE RECOVERY WORK",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]),
-    Line::from(""),
-    detail_line("Ticket", &recovery.ticket, Color::Green),
-    detail_line("Scope", &recovery.scope_path, Color::Cyan),
-    Line::from(""),
-    Line::from(vec![Span::styled(
-        "Press Enter to save the recovery work.",
-        Style::default().fg(Color::Gray),
-    )]),
-    Line::from(""),
-    Line::from(vec![Span::styled(
-        app.status.clone(),
-        Style::default().fg(Color::Yellow),
-    )]),
-];
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Save Recovery Work "),
+    );
 
-let widget = Paragraph::new(lines).block(
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" Save Recovery Work "),
-);
-
-frame.render_widget(widget, area);
-
-
+    frame.render_widget(widget, area);
 }
 
 fn draw_inspection_panels(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {

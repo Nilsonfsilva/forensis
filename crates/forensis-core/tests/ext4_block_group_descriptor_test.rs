@@ -11,9 +11,8 @@ fn parses_valid_descriptor() {
     data[0x0E..0x10].copy_from_slice(&500u16.to_le_bytes());
     data[0x10..0x12].copy_from_slice(&600u16.to_le_bytes());
 
-    let descriptor =
-        Ext4BlockGroupDescriptor::parse(&data)
-            .expect("valid EXT4 block group descriptor should parse");
+    let descriptor = Ext4BlockGroupDescriptor::parse(&data)
+        .expect("valid EXT4 block group descriptor should parse");
 
     assert_eq!(descriptor.block_bitmap(), 100);
     assert_eq!(descriptor.inode_bitmap(), 200);
@@ -36,9 +35,8 @@ fn rejects_insufficient_data() {
 fn parses_zero_values() {
     let data = [0u8; Ext4BlockGroupDescriptor::SIZE];
 
-    let descriptor =
-        Ext4BlockGroupDescriptor::parse(&data)
-            .expect("32 bytes should be enough to parse a descriptor");
+    let descriptor = Ext4BlockGroupDescriptor::parse(&data)
+        .expect("32 bytes should be enough to parse a descriptor");
 
     assert_eq!(descriptor.block_bitmap(), 0);
     assert_eq!(descriptor.inode_bitmap(), 0);
@@ -56,9 +54,8 @@ fn ignores_bytes_beyond_descriptor_size() {
     data[0x04..0x08].copy_from_slice(&5678u32.to_le_bytes());
     data[0x08..0x0C].copy_from_slice(&9012u32.to_le_bytes());
 
-    let descriptor =
-        Ext4BlockGroupDescriptor::parse(&data)
-            .expect("descriptor should parse from a larger buffer");
+    let descriptor = Ext4BlockGroupDescriptor::parse(&data)
+        .expect("descriptor should parse from a larger buffer");
 
     assert_eq!(descriptor.block_bitmap(), 1234);
     assert_eq!(descriptor.inode_bitmap(), 5678);

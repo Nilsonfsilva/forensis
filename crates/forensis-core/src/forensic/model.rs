@@ -589,5 +589,6 @@ pub enum ForensicFilesystem {
     Ntfs,
     Ext4,
     Ext3,
+    Fat32,
     Unknown,
 }

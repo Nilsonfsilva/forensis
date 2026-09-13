@@ -143,18 +143,9 @@ fn i_block_preserves_raw_bytes() {
 
     let inode = Ext4Inode::parse(&data).unwrap();
 
-    assert_eq!(
-        &inode.i_block()[0..4],
-        &10u32.to_le_bytes()
-    );
+    assert_eq!(&inode.i_block()[0..4], &10u32.to_le_bytes());
 
-    assert_eq!(
-        &inode.i_block()[4..8],
-        &20u32.to_le_bytes()
-    );
+    assert_eq!(&inode.i_block()[4..8], &20u32.to_le_bytes());
 
-    assert_eq!(
-        &inode.i_block()[8..12],
-        &30u32.to_le_bytes()
-    );
+    assert_eq!(&inode.i_block()[8..12], &30u32.to_le_bytes());
 }
