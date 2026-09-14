@@ -1,4 +1,5 @@
 use crate::filesystem::FileSystemType;
+use crate::progress::{NoProgress, ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit};
 use crate::result::Result;
 use crate::traits::Readable;
 use crate::types::ByteOffset;
@@ -142,7 +143,25 @@ impl NtfsFileSystem {
     }
 
     /// Parses the NTFS MFT and builds an investigation model.
+    ///
+    /// This method preserves the original API and performs the investigation
+    /// without reporting progress.
     pub fn investigate<R: Readable>(&self, reader: &mut R) -> Result<Investigation> {
+        self.investigate_with_progress(reader, &NoProgress)
+    }
+
+    /// Parses the NTFS MFT and reports investigation progress.
+    pub fn investigate_with_progress<R: Readable>(
+        &self,
+        reader: &mut R,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Investigation> {
+        reporter.report(ProgressEvent::indeterminate(
+            ProgressPhase::ReadingMetadata,
+            0,
+            ProgressUnit::None,
+        ));
+
         /*
          * ---------------------------------------------------------
          * 1. Create the MFT reader.
@@ -233,6 +252,12 @@ impl NtfsFileSystem {
          * ---------------------------------------------------------
          */
 
+        reporter.report(ProgressEvent::indeterminate(
+            ProgressPhase::ReadingData,
+            0,
+            ProgressUnit::Bytes,
+        ));
+
         let data_run_reader =
             DataRunReader::new(self.partition_offset, self.boot_sector.bytes_per_cluster());
 
@@ -273,6 +298,19 @@ impl NtfsFileSystem {
             let record_bytes = mft_bytes[offset as usize..end as usize].to_vec();
 
             /*
+             * Report progress for every MFT slot.
+             *
+             * The denominator is the logical number of MFT records,
+             * not the number of records that produce forensic entries.
+             */
+            reporter.report(ProgressEvent::new(
+                ProgressPhase::ProcessingRecords,
+                index + 1,
+                record_count,
+                ProgressUnit::MftRecords,
+            ));
+
+            /*
              * -----------------------------------------------------
              * Empty MFT slot.
              *
@@ -289,6 +327,8 @@ impl NtfsFileSystem {
 
             investigation.process_mft_record(&mut record)?;
         }
+
+        reporter.report(ProgressEvent::completed());
 
         Ok(investigation)
     }

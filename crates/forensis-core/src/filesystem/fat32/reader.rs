@@ -21,11 +21,28 @@ const FAT_END_OF_CHAIN: u32 = 0x0FFF_FFF8;
 /// Maximum size of a directory cluster read request.
 const MAX_DIRECTORY_BYTES: usize = 1 << 20;
 
+/// Maximum total size of a FAT that is fully cached in memory.
+///
+/// A FAT32 allocation table uses 4 bytes per cluster. Volumes up to
+/// reasonable sizes fit in a few megabytes, so loading the whole table
+/// with a single read is much faster than resolving chains cluster by
+/// cluster through individual 4-byte I/O operations.
+///
+/// Volumes whose FAT exceeds this cap fall back to reading entries one
+/// by one.
+const MAX_CACHED_FAT_BYTES: usize = 256 << 20;
+
 /// Reads clusters, FAT entries and raw file data from a FAT32 volume.
 pub struct Fat32Reader<R: Readable> {
     source: R,
     boot: Fat32BootSector,
     partition_offset: u64,
+
+    /// Lazily loaded copy of the primary FAT, indexed by cluster.
+    ///
+    /// Initialized on the first FAT entry read when the table is small
+    /// enough to be cached.
+    fat_cache: Option<Vec<u32>>,
 }
 
 impl<R: Readable> Fat32Reader<R> {
@@ -41,6 +58,7 @@ impl<R: Readable> Fat32Reader<R> {
             source,
             boot,
             partition_offset,
+            fat_cache: None,
         })
     }
 
@@ -197,6 +215,17 @@ impl<R: Readable> Fat32Reader<R> {
             )));
         }
 
+        if let Some(entries) = self.fat_cache.as_ref() {
+            return Ok(entries[cluster as usize]);
+        }
+
+        let fat_bytes = u64::from(self.boot.fat_size()) * u64::from(self.boot.bytes_per_sector());
+
+        if fat_bytes <= MAX_CACHED_FAT_BYTES as u64 {
+            self.ensure_fat_cache()?;
+            return Ok(self.fat_cache.as_ref().unwrap()[cluster as usize]);
+        }
+
         let fat_offset = self.boot.reserved_sectors() as u64 * self.boot.bytes_per_sector() as u64;
 
         let entry_offset = fat_offset + cluster as u64 * 4;
@@ -206,6 +235,42 @@ impl<R: Readable> Fat32Reader<R> {
         self.read_at(entry_offset, &mut raw)?;
 
         Ok(u32::from_le_bytes(raw))
+    }
+
+    /// Loads the primary FAT into memory.
+    ///
+    /// The whole table is read with a single physical I/O operation and
+    /// kept for the remaining chain resolution. This avoids performing
+    /// one 4-byte read per cluster, which would be prohibitively slow on
+    /// physical devices.
+    fn ensure_fat_cache(&mut self) -> Result<()> {
+        if self.fat_cache.is_some() {
+            return Ok(());
+        }
+
+        let fat_bytes = u64::from(self.boot.fat_size()) * u64::from(self.boot.bytes_per_sector());
+
+        let fat_offset = self.boot.reserved_sectors() as u64 * self.boot.bytes_per_sector() as u64;
+
+        let mut data = vec![0u8; fat_bytes as usize];
+
+        self.read_at(fat_offset, &mut data)?;
+
+        let total = self.boot.total_clusters() as usize + 1;
+
+        let mut entries = vec![0u32; total];
+
+        for (index, chunk) in data.chunks_exact(4).enumerate() {
+            if index >= total {
+                break;
+            }
+
+            entries[index] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+
+        self.fat_cache = Some(entries);
+
+        Ok(())
     }
 
     /// Reads an arbitrary partition-relative sequence of bytes into a vector.
@@ -365,5 +430,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn fat_entries_are_served_from_cache() {
+        let img = image(0);
+
+        let mut reader = Fat32Reader::new(MemorySource { data: img }, 0).unwrap();
+
+        assert!(reader.fat_cache.is_none());
+
+        let first = reader.read_fat_entry(3).unwrap();
+
+        assert!(reader.fat_cache.is_some());
+
+        let second = reader.read_fat_entry(3).unwrap();
+
+        assert_eq!(first, second);
     }
 }

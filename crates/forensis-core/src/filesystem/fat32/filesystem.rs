@@ -1,9 +1,12 @@
 //! FAT32 filesystem top-level representation.
-
+use crate::progress::ProgressReporter;
 use crate::result::Result;
 use crate::traits::Readable;
 
-use super::{investigate_filesystem, Fat32BootSector, Fat32Investigation, Fat32Reader};
+use super::{
+    investigate_filesystem, investigate_filesystem_with_progress, Fat32BootSector,
+    Fat32Investigation, Fat32Reader,
+};
 
 /// Represents a FAT32 filesystem.
 ///
@@ -41,15 +44,27 @@ impl Fat32Filesystem {
         self.boot.cluster_size()
     }
 
-    /// Investigates the FAT32 filesystem.
+    /// Investigates the FAT32 filesystem without progress reporting.
     ///
-    /// The walk starts at the root directory and descends the whole
-    /// directory hierarchy, recovering deleted entries through their
-    /// residual directory slots and FAT chains.
+    /// This compatibility API intentionally keeps the existing behavior.
+    /// Progress reporting is disabled through `NoProgress`.
     pub fn investigate<R: Readable>(
         &self,
         reader: &mut Fat32Reader<R>,
     ) -> Result<Fat32Investigation> {
         investigate_filesystem(reader)
+    }
+
+    /// Investigates the FAT32 filesystem and reports progress.
+    ///
+    /// FAT32 directory traversal does not know the final number of
+    /// directory clusters in advance, so progress is reported as an
+    /// indeterminate counter of directory clusters processed.
+    pub fn investigate_with_progress<R: Readable>(
+        &self,
+        reader: &mut Fat32Reader<R>,
+        reporter: &dyn ProgressReporter,
+    ) -> Result<Fat32Investigation> {
+        investigate_filesystem_with_progress(reader, reporter)
     }
 }

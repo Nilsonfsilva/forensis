@@ -9,7 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-_Nothing yet._
+- **Recovery by status scope**: `RecoveryFilter` (`Deleted`/`Normal`/`All`)
+  plus the shared, filter-aware candidate collector
+  `collect_recoverable_entries` in `forensis-app`, used by both CLI and TUI.
+- **Normal-file recovery**: `recover_normal_files` /
+  `recover_normal_files_from_result` and `recover_objects` (by Object ID);
+  `recover_all_from_result`. `recover all` now covers Deleted **and** Normal
+  objects.
+- **CLI `recover` filter surface**: `recover deleted`, `recover normal` and
+  `recover all`, each accepting `--object <ID>...` to skip the interactive
+  selection and recover specific objects. All subcommands use the same
+  `forensis-app` API as the TUI.
+- **TUI recovery filter**: press `F` in the recovery view to cycle
+  Deleted → Normal → All, re-collecting candidates from the current scope;
+  the active filter is shown in the recovery workspace.
+- **Progress reporting across the investigation and recovery**
+  (the two moments): `ProgressPhase::Recovering` and
+  `ProgressUnit::Objects` added to the progress contract.
+- **ext4 progress**: root-directory walk reports inodes (indeterminate),
+  inode-table scan reports a determinate percentage per block group.
+- **exFAT progress**: directory walk reports directory clusters
+  (indeterminate).
+- **Recovery without re-investigation**: new `recover_deleted_files_from_result`,
+  `recover_object_from_result` and `recover_objects_from_result` reuse an
+  already-built `InspectionResult`, so recovery is a separate moment from the
+  investigation. Recovery progress is reported per object ("i de N").
+- **CLI**: `inspect`, `recover deleted` and `recover all` now show live
+  investigation progress, and recovery shows per-object progress.
+- **TUI**: investigation inside the interactive source/browse selection runs
+  in a background thread with shared progress state, shown live in the
+  evidence panel; recovery reuses the loaded model (no re-investigation).
+
+### Changed
+
+- FAT32 and exFAT no longer emit a final artificial `current == total` event;
+  percentages are only shown when a real denominator exists.
+
+### Fixed
+
+- CLI and TUI recovered each selected object by re-reading the filesystem.
+  Both now recover from the already-built forensic model.
+- FAT32 reads the whole FAT into a cache (`fat_cache`, capped at 256 MB) in a
+  single bulk read instead of issuing one 4-byte syscall per FAT entry; a FAT
+  large enough to exceed the cap falls back to per-entry reads. This removes
+  the dominant syscall overhead verified on a real 29 GB pendrive during a
+  strace run.
+- FAT32 directory parsing no longer loops forever when a recycled directory
+  cluster carries binary slot data: the 32-byte slot offset is advanced at the
+  top of the parse loop before plausibility checks can bail out early.
+- FAT32 only follows the recorded chain of a directory after the plausibility
+  gate accepts its first cluster (the `.`/`..` self entries that every real
+  FAT32 subdirectory carries, live or deleted). Without the gate, one recycled
+  cluster whose slot attribute exposed the directory bit made the walk read
+  megabytes of leftover file payload. The FAT32 root cluster is exempt because
+  it has no `.`/`..` entries.
 
 ## [0.2.0] - 2026-09-12
 

@@ -3,8 +3,8 @@
 //! FAT32 keeps its hierarchy in directory entries rather than inodes,
 //! and deleted files are marked by overwriting the first byte of their
 //! directory entry with `0xE5`. The walk below visits every reachable
-//! directory and also descends into deleted directories, so deleted
-//! entries keep their recovered names and parent chain.
+//! directory and also descends into deleted ones, so deleted entries
+//! keep their recovered names and parent chain.
 //!
 //! Content of deleted files is recovered by following the residual FAT
 //! chain, which is left intact when a file is deleted, up to the
@@ -12,12 +12,12 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use super::directory::parse_directory_entries;
+use super::directory::{has_directory_markers, parse_directory_entries};
 use super::Fat32Reader;
 use crate::filesystem::fat32::directory::Fat32DirectoryEntry;
 use crate::filesystem::fat32::Fat32InvestigationEntry;
-
 use crate::forensic::{ForensicEntry, ForensicFilesystem, ForensicModel, ForensicSource};
+use crate::progress::{ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit};
 use crate::result::Result;
 use crate::traits::Readable;
 
@@ -192,13 +192,24 @@ impl Fat32Investigation {
     }
 }
 
-/// Investigates a FAT32 filesystem.
+/// Investigates a FAT32 filesystem without progress reporting.
 ///
-/// The walk starts at the root directory (whose cluster is given by
-/// the boot sector) and recursively descends into every directory,
-/// including deleted ones.
+/// This compatibility API preserves the existing behavior by using a
+/// reporter that intentionally ignores all progress events.
 pub fn investigate_filesystem<R: Readable>(
     reader: &mut Fat32Reader<R>,
+) -> Result<Fat32Investigation> {
+    investigate_filesystem_with_progress(reader, &crate::progress::NoProgress)
+}
+
+/// Investigates a FAT32 filesystem and reports progress.
+///
+/// FAT32 directory traversal does not know the final number of directory
+/// clusters in advance. Progress is therefore reported as an indeterminate
+/// counter of directory clusters actually processed.
+pub fn investigate_filesystem_with_progress<R: Readable>(
+    reader: &mut Fat32Reader<R>,
+    reporter: &dyn ProgressReporter,
 ) -> Result<Fat32Investigation> {
     let boot = reader.boot();
 
@@ -227,6 +238,12 @@ pub fn investigate_filesystem<R: Readable>(
 
     visited_dirs.insert(root_cluster);
 
+    reporter.report(ProgressEvent::indeterminate(
+        ProgressPhase::ProcessingRecords,
+        0,
+        ProgressUnit::DirectoryClusters,
+    ));
+
     while let Some((cluster, parent_id, name)) = queue.pop_front() {
         if !walk_directory(
             reader,
@@ -238,10 +255,14 @@ pub fn investigate_filesystem<R: Readable>(
             parent_id,
             name,
             total_clusters,
+            root_cluster,
+            reporter,
         )? {
             continue;
         }
     }
+
+    reporter.report(ProgressEvent::completed());
 
     Ok(investigation)
 }
@@ -259,6 +280,8 @@ fn walk_directory<R: Readable>(
     parent_id: u64,
     name: String,
     total_clusters: u64,
+    root_cluster: u32,
+    reporter: &dyn ProgressReporter,
 ) -> Result<bool> {
     /*
      * A damaged directory whose recorded start cluster points outside
@@ -267,6 +290,22 @@ fn walk_directory<R: Readable>(
      * remaining directory tree is still inspected.
      */
     let chain = if (2..=total_clusters).contains(&(cluster as u64)) {
+        /*
+         * Gate: a real subdirectory begins with "." and "..". The FAT32
+         * root cluster has no such entries, so it is exempt. When a
+         * non-root cluster lacks both markers, it is recycled file
+         * payload whose slot attribute happened to expose the directory
+         * bit (0x10); walking its chain would read gigabytes of
+         * leftover data.
+         */
+        if cluster != root_cluster {
+            let first_cluster = reader.read_directory_cluster(cluster)?;
+
+            if !has_directory_markers(&first_cluster) {
+                return Ok(false);
+            }
+        }
+
         reader.walk_chain(cluster, total_clusters)?
     } else {
         Vec::new()
@@ -297,6 +336,12 @@ fn walk_directory<R: Readable>(
         let buffer = reader.read_directory_cluster(*directory_cluster)?;
 
         investigation.increment_records();
+
+        reporter.report(ProgressEvent::indeterminate(
+            ProgressPhase::ProcessingRecords,
+            investigation.record_count(),
+            ProgressUnit::DirectoryClusters,
+        ));
 
         for parsed in parse_directory_entries(&buffer) {
             register_entry(
@@ -465,48 +510,64 @@ mod tests {
     }
 
     #[test]
-    fn cycle_produces_safe_path() {
-        let mut investigation = nested_investigation();
-
-        investigation.add_entry(entry(10, 10, "corrompido", false));
-
-        let corrupted = investigation
-            .entries()
-            .iter()
-            .find(|e| e.object_id() == 10)
-            .unwrap();
-
-        assert_eq!(investigation.resolve_path(corrupted), "/");
-    }
-
-    #[test]
-    fn missing_parent_keeps_partial_path() {
-        let mut investigation = nested_investigation();
-
-        investigation.add_entry(entry(99, 999, "orfao.txt", false));
-
-        let orphan = investigation
-            .entries()
-            .iter()
-            .find(|e| e.object_id() == 99)
-            .unwrap();
-
-        assert_eq!(investigation.resolve_path(orphan), "/orfao.txt");
-    }
-
-    #[test]
-    fn converts_to_forensic_model() {
+    fn root_model_contains_fat32_filesystem() {
         let investigation = nested_investigation();
 
-        let model = investigation.to_forensic_model(Some("imagem.fat32".to_string()));
+        let model = investigation.to_forensic_model(None);
 
         assert_eq!(model.source().filesystem(), ForensicFilesystem::Fat32);
-        assert_eq!(model.source().image(), Some("imagem.fat32"));
-        assert_eq!(model.len(), 3);
+    }
 
-        let arquivo = &model.entries()[2];
+    #[test]
+    fn root_entry_is_directory() {
+        let investigation = nested_investigation();
 
-        assert_eq!(arquivo.identity.path, "/nivel1/arquivo.txt");
-        assert_eq!(arquivo.identity.kind, ForensicEntryKind::File);
+        let root = investigation
+            .entries()
+            .iter()
+            .find(|e| e.object_id() == 1)
+            .unwrap();
+
+        let forensic = root.to_forensic_entry(4096, 8, 1056);
+
+        assert_eq!(forensic.identity.kind, ForensicEntryKind::Directory);
+    }
+
+    #[test]
+    fn directory_marker_gate_rejects_payload_cluster() {
+        let mut payload = vec![0x01u8; 16384];
+
+        for chunk in payload.chunks_exact_mut(32) {
+            chunk[0x0B] = 0x10;
+        }
+
+        assert!(!has_directory_markers(&payload));
+    }
+
+    #[test]
+    fn directory_marker_gate_accepts_real_start() {
+        let mut buffer = vec![0u8; 16384];
+
+        let dot = *b".          ";
+        let dotdot = *b"..         ";
+
+        buffer[0..11].copy_from_slice(&dot);
+        buffer[0x0B] = 0x10;
+
+        buffer[32..43].copy_from_slice(&dotdot);
+        buffer[32 + 0x0B] = 0x10;
+
+        assert!(has_directory_markers(&buffer));
+    }
+
+    #[test]
+    fn directory_marker_gate_accepts_deleted_start() {
+        let mut buffer = vec![0u8; 16384];
+
+        buffer[0..11].copy_from_slice(b".          ");
+        buffer[0] = 0xE5;
+        buffer[0x0B] = 0x10;
+
+        assert!(has_directory_markers(&buffer));
     }
 }

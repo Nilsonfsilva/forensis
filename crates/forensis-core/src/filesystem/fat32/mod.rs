@@ -16,6 +16,8 @@ pub mod reader;
 pub use boot::Fat32BootSector;
 pub use directory::{lfn_checksum, parse_directory_entries, Fat32DirectoryEntry};
 pub use filesystem::Fat32Filesystem;
-pub use investigation::{investigate_filesystem, Fat32Investigation};
+pub use investigation::{
+    investigate_filesystem, investigate_filesystem_with_progress, Fat32Investigation,
+};
 pub use investigation_entry::Fat32InvestigationEntry;
 pub use reader::Fat32Reader;

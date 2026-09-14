@@ -15,6 +15,7 @@ use std::collections::{HashSet, VecDeque};
 use super::directory::{parse_directory_entries, ExFatEntryKind};
 use super::{ExFatInvestigationEntry, ExFatReader};
 use crate::forensic::{ForensicEntry, ForensicFilesystem, ForensicModel, ForensicSource};
+use crate::progress::{NoProgress, ProgressEvent, ProgressPhase, ProgressReporter, ProgressUnit};
 use crate::result::Result;
 use crate::traits::Readable;
 
@@ -170,6 +171,18 @@ impl ExFatInvestigation {
 pub fn investigate_filesystem<R: Readable>(
     reader: &mut ExFatReader<R>,
 ) -> Result<ExFatInvestigation> {
+    investigate_filesystem_with_progress(reader, &NoProgress)
+}
+
+/// Investigates an exFAT filesystem and reports progress.
+///
+/// exFAT directory traversal does not know the final number of directory
+/// clusters in advance. Progress is therefore reported as an indeterminate
+/// counter of directory clusters actually processed.
+pub fn investigate_filesystem_with_progress<R: Readable>(
+    reader: &mut ExFatReader<R>,
+    reporter: &dyn ProgressReporter,
+) -> Result<ExFatInvestigation> {
     let boot = reader.boot();
 
     let bytes_per_cluster = boot.cluster_size();
@@ -197,6 +210,12 @@ pub fn investigate_filesystem<R: Readable>(
 
     visited_dirs.insert(root_cluster);
 
+    reporter.report(ProgressEvent::indeterminate(
+        ProgressPhase::ProcessingRecords,
+        0,
+        ProgressUnit::DirectoryClusters,
+    ));
+
     while let Some((cluster, parent_id, name)) = queue.pop_front() {
         if !walk_directory(
             reader,
@@ -208,10 +227,13 @@ pub fn investigate_filesystem<R: Readable>(
             parent_id,
             name,
             cluster_count,
+            reporter,
         )? {
             continue;
         }
     }
+
+    reporter.report(ProgressEvent::completed());
 
     Ok(investigation)
 }
@@ -229,6 +251,7 @@ fn walk_directory<R: Readable>(
     parent_id: u64,
     name: String,
     cluster_count: u32,
+    reporter: &dyn ProgressReporter,
 ) -> Result<bool> {
     let chain = reader.walk_chain(cluster, cluster_count as u64)?;
 
@@ -259,6 +282,12 @@ fn walk_directory<R: Readable>(
         let buffer = reader.read_directory_cluster(*directory_cluster)?;
 
         investigation.increment_records();
+
+        reporter.report(ProgressEvent::indeterminate(
+            ProgressPhase::ProcessingRecords,
+            investigation.record_count(),
+            ProgressUnit::DirectoryClusters,
+        ));
 
         for parsed in parse_directory_entries(&buffer) {
             register_entry(

@@ -19,6 +19,8 @@ pub mod reader;
 pub use boot::ExFatBootSector;
 pub use directory::{parse_directory_entries, ExFatDirectoryEntry};
 pub use filesystem::ExFatFilesystem;
-pub use investigation::{investigate_filesystem, ExFatInvestigation};
+pub use investigation::{
+    investigate_filesystem, investigate_filesystem_with_progress, ExFatInvestigation,
+};
 pub use investigation_entry::ExFatInvestigationEntry;
 pub use reader::ExFatReader;

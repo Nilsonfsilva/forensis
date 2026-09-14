@@ -3,9 +3,9 @@ use crate::result::Result;
 use crate::traits::Readable;
 
 use super::{
-    investigate_filesystem, Ext4BlockBitmap, Ext4BlockGroupDescriptor, Ext4BlockGroupTable,
-    Ext4Inode, Ext4InodeBitmap, Ext4InodeLocator, Ext4InodeTable, Ext4Investigation, Ext4Reader,
-    Ext4Superblock,
+    investigate_filesystem, investigate_filesystem_with_progress, Ext4BlockBitmap,
+    Ext4BlockGroupDescriptor, Ext4BlockGroupTable, Ext4Inode, Ext4InodeBitmap, Ext4InodeLocator,
+    Ext4InodeTable, Ext4Investigation, Ext4Reader, Ext4Superblock,
 };
 
 /// Represents an EXT4 filesystem.
@@ -209,10 +209,26 @@ impl Ext4Filesystem {
     /// descends the whole directory hierarchy, converting the
     /// discovered EXT4 objects into their filesystem-independent
     /// forensic representation.
+    ///
+    /// This compatibility API performs the investigation without
+    /// reporting progress.
     pub fn investigate<R: Readable>(
         &self,
         reader: &mut Ext4Reader<R>,
     ) -> Result<Ext4Investigation> {
         investigate_filesystem(self, reader)
+    }
+
+    /// Investigates the EXT4 filesystem and reports progress.
+    ///
+    /// The reachable-directory walk is reported as an indeterminate
+    /// inode counter. The inode table scan for deleted files reports
+    /// a determinate percentage because the total inode count is known.
+    pub fn investigate_with_progress<R: Readable>(
+        &self,
+        reader: &mut Ext4Reader<R>,
+        reporter: &dyn crate::progress::ProgressReporter,
+    ) -> Result<Ext4Investigation> {
+        investigate_filesystem_with_progress(self, reader, reporter)
     }
 }

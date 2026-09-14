@@ -2,7 +2,10 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use anyhow::Result;
 
@@ -24,9 +27,10 @@ use ratatui::{
 use forensis_app::recovery::HashComparison;
 
 use forensis_app::{
-    discover_sources, inspect_image, next_recovery_ticket, recover_object, EvidenceSource,
-    ForensicEntry, ForensicEntryKind, ForensicModel, ForensicStatus, InspectionResult,
-    RecoveredFile,
+    collect_recoverable_entries, discover_sources, inspect_image_with_progress,
+    next_recovery_ticket, recover_object_from_result, EvidenceSource, ForensicEntry,
+    ForensicEntryKind, ForensicModel, ForensicStatus, InspectionResult, ProgressEvent,
+    ProgressPhase, ProgressReporter, ProgressUnit, RecoveredFile, RecoveryFilter,
 };
 
 struct NavigationState {
@@ -313,6 +317,7 @@ struct RecoveryState {
     ticket: String,
     work_name: String,
     scope_path: String,
+    filter: RecoveryFilter,
     candidates: Vec<RecoveryItem>,
     selected_ids: HashSet<u64>,
     results: Vec<RecoveredFile>,
@@ -321,11 +326,17 @@ struct RecoveryState {
 }
 
 impl RecoveryState {
-    fn new(ticket: String, scope_path: String, entries: Vec<ForensicEntry>) -> Self {
+    fn new(
+        ticket: String,
+        scope_path: String,
+        filter: RecoveryFilter,
+        entries: Vec<ForensicEntry>,
+    ) -> Self {
         Self {
             ticket,
             work_name: String::new(),
             scope_path,
+            filter,
             candidates: entries
                 .into_iter()
                 .map(|entry| RecoveryItem {
@@ -409,6 +420,99 @@ impl RecoveryState {
     }
 }
 
+struct PendingInvestigation {
+    progress: Arc<Mutex<Option<ProgressEvent>>>,
+    result: Arc<Mutex<Option<forensis_core::result::Result<InspectionResult>>>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for PendingInvestigation {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.join().ok();
+        }
+    }
+}
+
+struct TuiProgressReporter {
+    shared: Arc<Mutex<Option<ProgressEvent>>>,
+}
+
+impl ProgressReporter for TuiProgressReporter {
+    fn report(&self, event: ProgressEvent) {
+        if let Ok(mut guard) = self.shared.lock() {
+            *guard = Some(event);
+        }
+    }
+}
+
+struct LoadingProgressReporter;
+
+impl ProgressReporter for LoadingProgressReporter {
+    fn report(&self, event: ProgressEvent) {
+        let unit = match event.unit {
+            ProgressUnit::MftRecords => "MFT records",
+            ProgressUnit::Records => "records",
+            ProgressUnit::Inodes => "inodes",
+            ProgressUnit::DirectoryClusters => "directory clusters",
+            ProgressUnit::Bytes => "bytes",
+            ProgressUnit::Objects => "objects",
+            ProgressUnit::None => "units",
+        };
+
+        match event.phase {
+            ProgressPhase::Recovering => {}
+
+            ProgressPhase::Completed => {
+                println!("\r    Completed: 100%");
+            }
+
+            _ => {
+                if let Some(total) = event.total {
+                    let percentage = event.percentage().unwrap_or(0);
+
+                    print!(
+                        "\r    Investigating: {:3}% ({}/{} {})",
+                        percentage, event.current, total, unit
+                    );
+                } else {
+                    print!("\r    Investigating: {} {}", event.current, unit);
+                }
+
+                let _ = io::stdout().flush();
+            }
+        }
+    }
+}
+
+fn launch_investigation(path: PathBuf) -> PendingInvestigation {
+    let progress = Arc::new(Mutex::new(None::<ProgressEvent>));
+
+    let result = Arc::new(Mutex::new(
+        None::<forensis_core::result::Result<InspectionResult>>,
+    ));
+
+    let reporter = TuiProgressReporter {
+        shared: Arc::clone(&progress),
+    };
+
+    let result_slot = Arc::clone(&result);
+
+    let handle = thread::spawn(move || {
+        let investigation = inspect_image_with_progress(&path, &reporter);
+
+        if let Ok(mut guard) = result_slot.lock() {
+            *guard = Some(investigation);
+        }
+    });
+
+    PendingInvestigation {
+        progress,
+        result,
+        handle: Some(handle),
+    }
+}
+
 struct AppState {
     source_state: SourceState,
     source_mode: SourceMode,
@@ -417,6 +521,9 @@ struct AppState {
 
     result: Option<InspectionResult>,
     navigation: Option<NavigationState>,
+
+    pending_investigation: Option<PendingInvestigation>,
+    investigation_progress: Option<ProgressEvent>,
 
     recovery: Option<RecoveryState>,
 
@@ -438,9 +545,25 @@ impl AppState {
             browser: None,
             result: None,
             navigation: None,
+            pending_investigation: None,
+            investigation_progress: None,
             recovery: None,
             status: "No evidence source selected.".to_string(),
         }
+    }
+
+    fn start_investigation(&mut self, path: PathBuf) {
+        if self.pending_investigation.is_some() {
+            self.status = "Investigation already in progress.".to_string();
+
+            return;
+        }
+
+        self.investigation_progress = None;
+
+        self.status = format!("Investigating {}...", path.display());
+
+        self.pending_investigation = Some(launch_investigation(path));
     }
 
     fn load_result(&mut self, result: InspectionResult) {
@@ -472,7 +595,7 @@ fn main() -> Result<()> {
     if let Some(image_path) = args.get(1) {
         let path = PathBuf::from(image_path);
 
-        let result = inspect_image(&path)?;
+        let result = inspect_image_with_progress(&path, &LoadingProgressReporter)?;
 
         let mut app = AppState::new(Vec::new());
         app.load_result(result);
@@ -519,6 +642,38 @@ where
         terminal.draw(|frame| {
             draw_ui(frame, app);
         })?;
+
+        if app.pending_investigation.is_some() {
+            let (progress, finished) = {
+                let pending = app.pending_investigation.as_ref().unwrap();
+
+                let progress = pending.progress.lock().ok().and_then(|guard| *guard);
+
+                let finished = pending
+                    .result
+                    .lock()
+                    .ok()
+                    .and_then(|mut guard| guard.take());
+
+                (progress, finished)
+            };
+
+            app.investigation_progress = progress;
+
+            if let Some(finished) = finished {
+                app.pending_investigation = None;
+
+                match finished {
+                    Ok(result) => app.load_result(result),
+
+                    Err(error) => {
+                        app.investigation_progress = None;
+
+                        app.status = format!("Investigation failed: {}", error);
+                    }
+                }
+            }
+        }
 
         if !event::poll(std::time::Duration::from_millis(250))? {
             continue;
@@ -623,9 +778,7 @@ fn handle_source_selection(app: &mut AppState, key: KeyCode) -> Result<()> {
                 None => return Ok(()),
             };
 
-            let result = inspect_image(&path)?;
-
-            app.load_result(result);
+            app.start_investigation(path);
         }
 
         KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -692,9 +845,7 @@ fn handle_browser(app: &mut AppState, key: KeyCode) -> Result<()> {
             } else {
                 let path = entry.path;
 
-                let result = inspect_image(&path)?;
-
-                app.load_result(result);
+                app.start_investigation(path);
             }
         }
 
@@ -797,20 +948,28 @@ fn start_recovery(app: &mut AppState) {
             .map(|entry| entry.identity.path.clone())
             .unwrap_or_else(|| "/".to_string());
 
-        let candidates = collect_recoverable_entries(model, scope_parent);
+        let candidates = collect_recoverable_entries(model, scope_parent, RecoveryFilter::Deleted);
 
         (scope_parent, scope_path, candidates)
     };
 
     let candidate_count = candidates.len();
 
-    app.recovery = Some(RecoveryState::new(ticket, scope_path.clone(), candidates));
+    app.recovery = Some(RecoveryState::new(
+        ticket,
+        scope_path.clone(),
+        RecoveryFilter::Deleted,
+        candidates,
+    ));
 
     app.source_mode = SourceMode::Recovery;
     app.focus = Focus::Filesystem;
 
     app.status = if candidate_count == 0 {
-        format!("No deleted files found recursively under {}.", scope_path)
+        format!(
+            "No deleted files found recursively under {}. Press F to change the filter.",
+            scope_path
+        )
     } else {
         format!(
             "{} deleted file(s) found recursively under {}.",
@@ -819,59 +978,76 @@ fn start_recovery(app: &mut AppState) {
     };
 }
 
-fn collect_recoverable_entries(model: &ForensicModel, root_id: u64) -> Vec<ForensicEntry> {
-    let entries = model.entries();
-
-    let mut children = std::collections::HashMap::<u64, Vec<&ForensicEntry>>::new();
-
-    for entry in entries {
-        if let Some(parent_id) = entry.hierarchy.parent_id {
-            children.entry(parent_id).or_default().push(entry);
-        }
-    }
-
-    let mut result = Vec::new();
-    let mut stack = vec![root_id];
-
-    /*
-     * A forensic hierarchy must be traversed defensively.
-     *
-     * Filesystem metadata can be inconsistent or corrupted.
-     * Without a visited set, a directory cycle such as
-     * A -> B -> C -> A would cause an infinite traversal.
-     */
-    let mut visited = HashSet::new();
-
-    while let Some(parent_id) = stack.pop() {
-        if !visited.insert(parent_id) {
-            continue;
-        }
-
-        let children_of_parent = match children.get(&parent_id) {
-            Some(children) => children,
-            None => continue,
+fn cycle_recovery_filter(app: &mut AppState) {
+    let (scope_parent, next_filter) = {
+        let recovery = match app.recovery.as_ref() {
+            Some(recovery) => recovery,
+            None => return,
         };
 
-        for entry in children_of_parent {
-            if entry.is_directory() {
-                stack.push(entry.identity.object_id);
-                continue;
-            }
+        let next_filter = match recovery.filter {
+            RecoveryFilter::Deleted => RecoveryFilter::Normal,
+            RecoveryFilter::Normal => RecoveryFilter::All,
+            RecoveryFilter::All => RecoveryFilter::Deleted,
+        };
 
-            if entry.identity.status == ForensicStatus::Deleted {
-                result.push((*entry).clone());
+        let scope_parent = match &app.navigation {
+            Some(navigation) => navigation.current_parent,
+            None => return,
+        };
+
+        (scope_parent, next_filter)
+    };
+
+    let candidates = {
+        let result = match &app.result {
+            Some(result) => result,
+            None => {
+                app.status = "No investigation loaded.".to_string();
+                return;
             }
-        }
+        };
+
+        let model = match result.models.iter().find_map(|model| model.as_ref()) {
+            Some(model) => model,
+            None => {
+                app.status = "No forensic model available.".to_string();
+                return;
+            }
+        };
+
+        collect_recoverable_entries(model, scope_parent, next_filter)
+    };
+
+    let candidate_count = candidates.len();
+
+    if let Some(recovery) = app.recovery.as_mut() {
+        recovery.filter = next_filter;
+        recovery.candidates = candidates
+            .into_iter()
+            .map(|entry| RecoveryItem {
+                entry,
+                status: RecoveryItemStatus::Pending,
+                result_index: None,
+            })
+            .collect();
+        recovery.selected_ids.clear();
+        recovery.selected = 0;
     }
 
-    result.sort_by(|a, b| {
-        a.identity
-            .path
-            .to_lowercase()
-            .cmp(&b.identity.path.to_lowercase())
-    });
+    app.status = format!(
+        "Filter: {} — {} candidate(s).",
+        filter_display_name(next_filter),
+        candidate_count
+    );
+}
 
-    result
+fn filter_display_name(filter: RecoveryFilter) -> &'static str {
+    match filter {
+        RecoveryFilter::Deleted => "Deleted",
+        RecoveryFilter::Normal => "Normal",
+        RecoveryFilter::All => "All",
+    }
 }
 
 fn handle_recovery_view(app: &mut AppState, key: KeyCode) -> Result<()> {
@@ -906,6 +1082,10 @@ fn handle_recovery_view(app: &mut AppState, key: KeyCode) -> Result<()> {
             let count = recovery.selected_count();
 
             app.status = format!("All {} file(s) selected.", count);
+        }
+
+        KeyCode::Char('f') | KeyCode::Char('F') => {
+            cycle_recovery_filter(app);
         }
 
         KeyCode::Enter => {
@@ -964,8 +1144,8 @@ fn execute_selected_recovery(app: &mut AppState) -> Result<()> {
         recovery.selected_ids.iter().copied().collect::<Vec<_>>()
     };
 
-    let image_path = match &app.result {
-        Some(result) => result.image.clone(),
+    let inspection = match &app.result {
+        Some(result) => result,
         None => {
             app.status = "No investigation loaded.".to_string();
             return Ok(());
@@ -983,8 +1163,17 @@ fn execute_selected_recovery(app: &mut AppState) -> Result<()> {
 
     let mut new_results = Vec::new();
 
-    for object_id in object_ids {
-        let result = recover_object(&image_path, object_id, &working_dir);
+    let selected_total = object_ids.len();
+
+    for (selected_index, object_id) in object_ids.iter().enumerate() {
+        app.status = format!(
+            "Recovering object {}/{} (Object ID {})...",
+            selected_index + 1,
+            selected_total,
+            object_id
+        );
+
+        let result = recover_object_from_result(inspection, *object_id, &working_dir);
 
         match result {
             Ok(file) => {
@@ -1001,7 +1190,7 @@ fn execute_selected_recovery(app: &mut AppState) -> Result<()> {
                     recovery
                         .candidates
                         .iter()
-                        .find(|item| item.entry.identity.object_id == object_id)
+                        .find(|item| item.entry.identity.object_id == *object_id)
                         .map(|item| item.entry.clone())
                 };
 
@@ -1214,6 +1403,41 @@ fn filesystem_status(result: &InspectionResult) -> String {
     }
 
     statuses.join(" | ")
+}
+
+fn progress_text(event: &ProgressEvent) -> String {
+    let unit = match event.unit {
+        ProgressUnit::MftRecords => "MFT records",
+        ProgressUnit::Records => "records",
+        ProgressUnit::Inodes => "inodes",
+        ProgressUnit::DirectoryClusters => "directory clusters",
+        ProgressUnit::Bytes => "bytes",
+        ProgressUnit::Objects => "objects",
+        ProgressUnit::None => "units",
+    };
+
+    match event.phase {
+        ProgressPhase::Recovering => format!(
+            "Recovering objects: {}% ({} of {})",
+            event.percentage().unwrap_or(0),
+            event.current,
+            event.total.unwrap_or(0),
+        ),
+
+        _ => {
+            if let Some(total) = event.total {
+                format!(
+                    "Investigating: {}% ({}/{} {})",
+                    event.percentage().unwrap_or(0),
+                    event.current,
+                    total,
+                    unit
+                )
+            } else {
+                format!("Investigating: {} {}", event.current, unit)
+            }
+        }
+    }
 }
 
 fn draw_ui(frame: &mut ratatui::Frame, app: &AppState) {
@@ -1570,6 +1794,11 @@ fn draw_recovery_context(frame: &mut ratatui::Frame, app: &AppState, area: ratat
         Line::from(""),
         detail_line("Ticket", &recovery.ticket, Color::White),
         detail_line("Scope", &recovery.scope_path, Color::Cyan),
+        detail_line(
+            "Filter",
+            filter_display_name(recovery.filter),
+            Color::Magenta,
+        ),
         detail_line(
             "Candidates",
             &recovery.candidates.len().to_string(),
@@ -1949,7 +2178,7 @@ fn draw_empty_inspection_panels(
     app: &AppState,
     areas: &[ratatui::layout::Rect],
 ) {
-    let evidence = Paragraph::new(vec![
+    let mut lines = vec![
         Line::from(""),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1959,15 +2188,26 @@ fn draw_empty_inspection_panels(
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(app.status.clone()),
-    ])
-    .alignment(ratatui::layout::Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White))
-            .title(" Evidence "),
-    );
+    ];
+
+    if let Some(event) = &app.investigation_progress {
+        lines.push(Line::from(vec![Span::styled(
+            progress_text(event),
+            Style::default().fg(Color::Yellow),
+        )]));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(app.status.clone()));
+
+    let evidence = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::White))
+                .title(" Evidence "),
+        );
 
     frame.render_widget(evidence, areas[0]);
 
@@ -2385,6 +2625,13 @@ fn draw_footer(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout
             ),
             Span::styled("Select All   ", Style::default().fg(Color::Gray)),
             Span::styled(
+                "F ",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Filter   ", Style::default().fg(Color::Gray)),
+            Span::styled(
                 "ENTER ",
                 Style::default()
                     .fg(Color::Green)
@@ -2602,7 +2849,7 @@ mod tests {
 
     use forensis_app::{
         ForensicAllocation, ForensicFilesystem, ForensicHierarchy, ForensicIdentity,
-        ForensicMetadata, ForensicObject, ForensicPhysicalLocation, ForensicSource, ForensicStatus,
+        ForensicMetadata, ForensicObject, ForensicPhysicalLocation, ForensicStatus,
     };
 
     #[test]
@@ -2723,78 +2970,5 @@ mod tests {
         );
 
         assert_eq!(entry_color(&entry), Color::LightYellow);
-    }
-
-    #[test]
-    fn collect_recoverable_entries_handles_cycles() {
-        let entries = vec![
-            ForensicEntry::new(
-                ForensicIdentity::new(
-                    "A",
-                    "/A",
-                    ForensicEntryKind::Directory,
-                    ForensicStatus::Normal,
-                    10,
-                ),
-                ForensicHierarchy::new(Some(30)),
-                ForensicMetadata::new(Some(0), Some(0)),
-                ForensicObject::new(ForensicFilesystem::Ntfs, 10),
-                ForensicAllocation::empty(),
-                ForensicPhysicalLocation::empty(),
-            ),
-            ForensicEntry::new(
-                ForensicIdentity::new(
-                    "B",
-                    "/A/B",
-                    ForensicEntryKind::Directory,
-                    ForensicStatus::Normal,
-                    20,
-                ),
-                ForensicHierarchy::new(Some(10)),
-                ForensicMetadata::new(Some(0), Some(0)),
-                ForensicObject::new(ForensicFilesystem::Ntfs, 20),
-                ForensicAllocation::empty(),
-                ForensicPhysicalLocation::empty(),
-            ),
-            ForensicEntry::new(
-                ForensicIdentity::new(
-                    "C",
-                    "/A/B/C",
-                    ForensicEntryKind::Directory,
-                    ForensicStatus::Normal,
-                    30,
-                ),
-                ForensicHierarchy::new(Some(20)),
-                ForensicMetadata::new(Some(0), Some(0)),
-                ForensicObject::new(ForensicFilesystem::Ntfs, 30),
-                ForensicAllocation::empty(),
-                ForensicPhysicalLocation::empty(),
-            ),
-            ForensicEntry::new(
-                ForensicIdentity::new(
-                    "deleted.txt",
-                    "/A/deleted.txt",
-                    ForensicEntryKind::File,
-                    ForensicStatus::Deleted,
-                    40,
-                ),
-                ForensicHierarchy::new(Some(10)),
-                ForensicMetadata::new(Some(10), Some(10)),
-                ForensicObject::new(ForensicFilesystem::Ntfs, 40),
-                ForensicAllocation::empty(),
-                ForensicPhysicalLocation::empty(),
-            ),
-        ];
-
-        let model = ForensicModel::new(
-            ForensicSource::new(None, ForensicFilesystem::Ntfs),
-            4,
-            entries,
-        );
-
-        let result = collect_recoverable_entries(&model, 10);
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].identity.object_id, 40);
     }
 }
