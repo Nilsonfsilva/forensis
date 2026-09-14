@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+### Fixed
+
+- FAT32 reads the whole FAT into a cache (`fat_cache`, capped at 256 MB) in a
+  single bulk read instead of issuing one 4-byte syscall per FAT entry; a FAT
+  large enough to exceed the cap falls back to per-entry reads. This removes
+  the dominant syscall overhead verified on a real 29 GB pendrive during a
+  strace run.
+- FAT32 directory parsing no longer loops forever when a recycled directory
+  cluster carries binary slot data: the 32-byte slot offset is advanced at the
+  top of the parse loop before plausibility checks can bail out early.
+- FAT32 only follows the recorded chain of a directory after the plausibility
+  gate accepts its first cluster (the `.`/`..` self entries that every real
+  FAT32 subdirectory carries, live or deleted). Without the gate, one recycled
+  cluster whose slot attribute exposed the directory bit made the walk read
+  megabytes of leftover file payload. The FAT32 root cluster is exempt because
+  it has no `.`/`..` entries.
+
+### Removed
+
+- `crates/forensis-core/src/progress_root_owned/`: root-owned leftover kept
+  from the initial scaffold, superseded by `progress`.
+
+### Validated
+
+- Real-device test on a 29 GB FAT32 pendrive (`inspect` with directory-plausibility
+  gate: 19 directory clusters, 219 entries) and on an NTFS boot partition
+  (256 MFT records, 159 entries). Recovery of normal, deleted and multi-GB
+  objects reported `Hash comparison: Identical` on both filesystems.
+
+## [0.3.0] - 2026-09-13
+
 ### Added
 
 - **Recovery by status scope**: `RecoveryFilter` (`Deleted`/`Normal`/`All`)
@@ -49,20 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - CLI and TUI recovered each selected object by re-reading the filesystem.
   Both now recover from the already-built forensic model.
-- FAT32 reads the whole FAT into a cache (`fat_cache`, capped at 256 MB) in a
-  single bulk read instead of issuing one 4-byte syscall per FAT entry; a FAT
-  large enough to exceed the cap falls back to per-entry reads. This removes
-  the dominant syscall overhead verified on a real 29 GB pendrive during a
-  strace run.
-- FAT32 directory parsing no longer loops forever when a recycled directory
-  cluster carries binary slot data: the 32-byte slot offset is advanced at the
-  top of the parse loop before plausibility checks can bail out early.
-- FAT32 only follows the recorded chain of a directory after the plausibility
-  gate accepts its first cluster (the `.`/`..` self entries that every real
-  FAT32 subdirectory carries, live or deleted). Without the gate, one recycled
-  cluster whose slot attribute exposed the directory bit made the walk read
-  megabytes of leftover file payload. The FAT32 root cluster is exempt because
-  it has no `.`/`..` entries.
 
 ## [0.2.0] - 2026-09-12
 
