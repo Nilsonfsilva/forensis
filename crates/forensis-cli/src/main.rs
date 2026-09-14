@@ -56,57 +56,44 @@ enum Command {
 
     /// Recovers forensic objects from a disk image.
     Recover {
-        #[command(subcommand)]
-        command: RecoverCommand,
+        /// Path to the disk image.
+        image: PathBuf,
+
+        /// Directory where recovered files will be written.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Object IDs to recover (skips interactive selection).
+        #[arg(long)]
+        object: Vec<u64>,
+
+        /// Recovery category: FILE, DELETED or ALL (skips the interactive prompt).
+        #[arg(long)]
+        category: Option<RecoveryCategoryArg>,
     },
 }
 
-#[derive(Subcommand, Debug)]
-enum RecoverCommand {
-    /// Selects and recovers objects marked as deleted.
-    Deleted {
-        /// Path to the disk image.
-        image: PathBuf,
+/// Recovery category used by the recover command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum RecoveryCategoryArg {
+    /// Normal (live) files.
+    File,
 
-        /// Directory where recovered files will be written.
-        #[arg(short, long)]
-        output: PathBuf,
+    /// Deleted files.
+    Deleted,
 
-        /// Object IDs to recover (skips interactive selection).
-        #[arg(long)]
-        object: Vec<u64>,
-    },
+    /// Deleted and normal files.
+    All,
+}
 
-    /// Selects and recovers objects marked as normal (live files).
-    Normal {
-        /// Path to the disk image.
-        image: PathBuf,
-
-        /// Directory where recovered files will be written.
-        #[arg(short, long)]
-        output: PathBuf,
-
-        /// Object IDs to recover (skips interactive selection).
-        #[arg(long)]
-        object: Vec<u64>,
-    },
-
-    /// Runs all currently available recovery methods.
-    ///
-    /// At this stage this includes physical recovery of
-    /// deleted and normal filesystem objects.
-    All {
-        /// Path to the disk image.
-        image: PathBuf,
-
-        /// Directory where recovered files will be written.
-        #[arg(short, long)]
-        output: PathBuf,
-
-        /// Object IDs to recover (skips the full scope).
-        #[arg(long)]
-        object: Vec<u64>,
-    },
+impl RecoveryCategoryArg {
+    fn filter(self) -> RecoveryFilter {
+        match self {
+            Self::File => RecoveryFilter::Normal,
+            Self::Deleted => RecoveryFilter::Deleted,
+            Self::All => RecoveryFilter::All,
+        }
+    }
 }
 
 /// Status filter used by the inspect command.
@@ -182,8 +169,13 @@ fn main() -> Result<()> {
             tree_command(image, path)?;
         }
 
-        Command::Recover { command } => {
-            recover_command(command)?;
+        Command::Recover {
+            image,
+            output,
+            object,
+            category,
+        } => {
+            recover_command(image, output, object, category)?;
         }
     }
 
@@ -537,34 +529,82 @@ fn format_status_filter(result: &InspectionResult, status: StatusFilter) -> Stri
  * ---------------------------------------------------------
  */
 
-fn recover_command(command: RecoverCommand) -> Result<()> {
-    match command {
-        RecoverCommand::Deleted {
-            image,
-            output,
-            object,
-        } => {
-            recover_scope_command(image, output, object, RecoveryFilter::Deleted)?;
-        }
+fn recover_command(
+    image: PathBuf,
+    output: Option<PathBuf>,
+    requested_objects: Vec<u64>,
+    category: Option<RecoveryCategoryArg>,
+) -> Result<()> {
+    let filter = match category {
+        Some(category) => category.filter(),
+        None => prompt_recovery_category()?.filter(),
+    };
 
-        RecoverCommand::Normal {
-            image,
-            output,
-            object,
-        } => {
-            recover_scope_command(image, output, object, RecoveryFilter::Normal)?;
-        }
+    let output = match output {
+        Some(output) => output,
+        None => prompt_recovery_output()?,
+    };
 
-        RecoverCommand::All {
-            image,
-            output,
-            object,
-        } => {
-            recover_all_command(image, output, object)?;
-        }
+    match filter {
+        RecoveryFilter::All => recover_all_command(image, output, requested_objects)?,
+
+        _ => recover_scope_command(image, output, requested_objects, filter)?,
     }
 
     Ok(())
+}
+
+fn prompt_recovery_category() -> Result<RecoveryCategoryArg> {
+    println!(
+        "{}Which category of files to recover?{}",
+        COLOR_LIGHT_YELLOW, COLOR_RESET
+    );
+    println!("  {}[1]{} FILE", COLOR_LIGHT_BLUE, COLOR_RESET);
+    println!("  {}[2]{} DELETED", COLOR_LIGHT_BLUE, COLOR_RESET);
+    println!("  {}[3]{} ALL", COLOR_LIGHT_BLUE, COLOR_RESET);
+    println!();
+
+    print!(
+        "{}Choose a category [1-3]: {}",
+        COLOR_LIGHT_YELLOW, COLOR_RESET
+    );
+
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+
+    io::stdin().read_line(&mut input)?;
+
+    match input.trim() {
+        "1" => Ok(RecoveryCategoryArg::File),
+        "2" => Ok(RecoveryCategoryArg::Deleted),
+        "3" => Ok(RecoveryCategoryArg::All),
+        other => Err(anyhow!(
+            "Invalid category: {}. Expected 1 (FILE), 2 (DELETED) or 3 (ALL).",
+            other
+        )),
+    }
+}
+
+fn prompt_recovery_output() -> Result<PathBuf> {
+    print!(
+        "{}Output directory [forensis-recovery]: {}",
+        COLOR_LIGHT_YELLOW, COLOR_RESET
+    );
+
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+
+    io::stdin().read_line(&mut input)?;
+
+    let trimmed = input.trim();
+
+    if trimmed.is_empty() {
+        return Ok(PathBuf::from("forensis-recovery"));
+    }
+
+    Ok(PathBuf::from(trimmed))
 }
 
 fn recover_scope_command(
@@ -615,12 +655,9 @@ fn recover_scope_command(
 
         println!();
 
-        let item_color = match filter {
-            RecoveryFilter::Deleted => COLOR_RED,
-            _ => COLOR_LIGHT_YELLOW,
-        };
-
         for (index, entry) in candidates.iter().enumerate() {
+            let item_color = recovery_entry_color(entry);
+
             println!(
                 "{}[{}]{} {}{}",
                 item_color,
@@ -779,9 +816,12 @@ fn save_recovery_work(
 
     println!("Selected: {}", recovered + failed);
 
-    println!("Recovered: {}", recovered);
+    println!(
+        "Recovered: {}{}{}",
+        COLOR_LIGHT_BLUE, recovered, COLOR_RESET
+    );
 
-    println!("Failed: {}", failed);
+    println!("Failed: {}{}{}", COLOR_RED, failed, COLOR_RESET);
 
     let final_dir = output.join(format!("forensis-recovery-cli-{}", ticket));
 
@@ -805,6 +845,14 @@ fn filter_scope_name(filter: RecoveryFilter) -> &'static str {
         RecoveryFilter::Deleted => "Deleted",
         RecoveryFilter::Normal => "Normal",
         RecoveryFilter::All => "All",
+    }
+}
+
+fn recovery_entry_color(entry: &ForensicEntry) -> &'static str {
+    match entry.identity.status {
+        ForensicStatus::Deleted => COLOR_RED,
+        ForensicStatus::Normal => COLOR_BLUE,
+        _ => COLOR_LIGHT_YELLOW,
     }
 }
 
@@ -865,7 +913,10 @@ fn parse_recovery_selection(input: &str, total: usize) -> Result<Vec<usize>> {
 
 fn print_recovery_result(result: &forensis_app::RecoveredFile) {
     if result.recovery.is_recovered() {
-        println!("Recovery status: {}Recovered{}", COLOR_GREEN, COLOR_RESET);
+        println!(
+            "Recovery status: {}Recovered{}",
+            COLOR_LIGHT_BLUE, COLOR_RESET
+        );
     } else {
         println!(
             "Recovery status: {}Recovery failed{}",
@@ -990,9 +1041,12 @@ fn recover_all_command(image: PathBuf, output: PathBuf, requested_objects: Vec<u
 
     println!("Recovery objects processed: {}", total);
 
-    println!("Recovered: {}", recovered);
+    println!(
+        "Recovered: {}{}{}",
+        COLOR_LIGHT_BLUE, recovered, COLOR_RESET
+    );
 
-    println!("Failed: {}", failed);
+    println!("Failed: {}{}{}", COLOR_RED, failed, COLOR_RESET);
 
     println!("==================================================");
 

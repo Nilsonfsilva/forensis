@@ -1,4 +1,4 @@
-.TH FORENSIS-CLI 1 "2026-09" "Forensis 0.2.0" "User Commands"
+.TH FORENSIS-CLI 1 "2026-09" "Forensis 0.5.0" "User Commands"
 .SH NAME
 forensis \- command line interface for digital forensic investigation
 .SH SYNOPSIS
@@ -60,16 +60,25 @@ filesystem prints only the subtree rooted at that path; if the path does not
 exist, it prints
 .RB \(oq Path\ not\ found \(cq.
 .TP
-.B recover deleted
-Selects and recovers objects marked as deleted. Lists the recoverable objects,
-prompts for a selection (\fB1,3,5\fR for individual objects, \fBA\fR for all,
-\fBQ\fR to cancel), and writes the recovered work to the recovery directory
-(see RECOVERY WORK DIRECTORY below).
+.B recover
+Recovers forensic objects from the image. By default the command asks which
+category of files to recover (\fBFILE\fR, \fBDELETED\fR or \fBALL\fR), asks
+for the output directory, then lists the recoverable objects and prompts for
+a selection (\fB1,3,5\fR for individual objects, \fBA\fR for all, \fBQ\fR to
+cancel). Each interactive step can be skipped with an option:
+.RS
 .TP
-.B recover all
-Runs all currently available recovery methods on the image. At this stage this
-includes physical recovery of deleted filesystem objects. Recovered files are
-written directly to the directory given by \fB\-\-output\fR.
+.BR \-\-category " \fIcategory\fR"
+Skips the category prompt. Accepted values are \fBfile\fR, \fBdeleted\fR and
+\fBall\fR.
+.TP
+.BR \-\-output " \fIdir\fR"
+Skips the output-directory prompt and writes the recovered work to
+\fIdir\fR.
+.TP
+.BR \-\-object " \fIid\fR..."
+Skips the interactive selection and recovers the objects with the given IDs.
+.RE
 .TP
 .B help, h
 Print the list of commands or the help of a specific command.
@@ -99,7 +108,7 @@ Object whose forensic metadata is damaged or contradictory.
 .IP "unknown"
 Object that could not be classified.
 .SH RECOVERY WORK DIRECTORY
-.B recover deleted
+.B recover
 keeps its output in a directory named
 .I forensis-recovery
 created at the top of the current directory. During the operation the data is
@@ -112,10 +121,23 @@ increasing counter stored in
 .IR forensis-recovery/.ticket ,
 which guarantees every recovery produces a unique directory. If the final
 directory already exists, the command fails instead of overwriting previous
-work. By contrast,
-.B recover all
-writes directly to the directory passed with
-.BR \-\-output .
+work. When the category is \fBALL\fR, files are written directly to the
+directory given by \fB\-\-output\fR (or the prompted directory).
+.SH RECOVERY OUTPUT COLORS
+The
+.B recover
+command colors its output with the same palette as the terminal UI:
+.IP "red" 11
+Deleted candidates and the \fBFailed:\fR counter of the recovery summary.
+.IP "blue" 11
+Normal (live) candidates.
+.IP "light blue" 11
+A successful recovery (\fBRecovery status: Recovered\fR) and the
+\fBRecovered:\fR counter of the recovery summary.
+.PP
+Candidates are colored by their own forensic status, not by the selected
+category, so an \fBALL\fR list shows deleted and normal objects in different
+colors.
 .SH EXAMPLES
 .SS Inspecting a disk image
 Inspect a whole image:
@@ -157,20 +179,27 @@ Print only the subtree of a path inside the filesystem:
 forensis tree disk.img /etc/ssh
 .EE
 .RE
-.SS Recovering deleted objects
-Recover deleted objects interactively:
+.SS Recovering objects
+Recover objects interactively:
 .PP
 .RS
 .EX
-forensis recover deleted disk.img --output /dest
+forensis recover disk.img
 .EE
 .RE
 .PP
-The command lists the recoverable objects, assigns each one a number and
-prompts for the selections:
+The command asks the category, then lists the recoverable objects, assigns
+each one a number and prompts for the selections:
 .PP
 .RS
 .EX
+Which category of files to recover?
+  [1] FILE
+  [2] DELETED
+  [3] ALL
+
+Choose a category [1-3]: 2
+
 Recoverable deleted objects:
 
 [1] victim.txt
@@ -199,13 +228,13 @@ Failed: 0
 Recovery work saved to forensis-recovery/forensis-recovery-cli-00001
 .EE
 .RE
-.SS Recovering with all available methods
-Run every recovery method available and write the results to a specific
-directory:
+.SS Recovering with a specific category and output
+Skip the prompts and recover a category directly into a directory:
 .PP
 .RS
 .EX
-forensis recover all disk.img --output /dest
+forensis recover disk.img --category deleted --output /dest
+forensis recover disk.img --category all --output /dest
 .EE
 .RE
 .SS Getting help
@@ -244,8 +273,8 @@ cargo run --bin forensis inspect \e
 .RE
 .SH CAVEATS
 The
-.B recover deleted
-subcommand accepts
+.B recover
+command accepts
 .BR \-\-output ,
 which is used as the destination directory for both the working and the
 final recovery locations.

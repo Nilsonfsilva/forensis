@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI recovery colors aligned with the TUI**: the recoverable-candidate list
+  is now colored per forensic object status (deleted in red, normal in blue)
+  instead of by filter; a successful recovery is reported in light blue and
+  the Recovered/Failed counters in the recovery summary are colored light blue
+  and red respectively. The colors are documented in `docs/forensis-cli.1`.
+
+### Fixed
+
+- **Build on macOS and Windows**: the non-Linux `block_device_size` in
+  `forensis-core` returned a `std::io::Result` where a `ForensisError` was
+  expected, breaking compilation on non-Linux targets. The error is now mapped
+  through the `From<io::Error>` conversion.
+- **Release workflow targets**: builds now pass `--target` explicitly and the
+  packaging steps pick the binaries from `target/<target>/release/`, so the
+  artifact matches the declared target on every runner; deprecated Node.js 20
+  actions bumped to `v5` (`checkout`, `upload-artifact`, `download-artifact`).
+
+## [0.5.0] - 2026-09-14
+
+### Added
+
+- **TUI recovery category selection**: pressing `R` in the investigation now
+  opens a category screen (FILE / DELETED / All) before listing the
+  candidates; after choosing, the recovery view opens on that filter. The
+  filter is still cyclable with `F` inside the recovery view.
+- **CLI unified interactive `recover`**: the separate
+  `recover deleted` / `recover normal` / `recover all` subcommands are replaced
+  by a single `forensis recover <image>`. When the options are not given, the
+  command prompts for the category (1=FILE, 2=DELETED, 3=ALL) and the output
+  directory before listing the candidates. `--category <file|deleted|all>`,
+  `--output <dir>` and `--object <ID>...` preserve the non-interactive flow.
+- **TUI exit confirmation**: pressing `Esc` or `Q` in the exit-eligible modes
+  shows a centered prompt "Do you want to close Forensis? (Y/N)"; `Y` closes,
+  `N` (or `Esc`) returns to the session.
+- **TUI recovery selection marker**: the checkbox in the recovery candidate
+  list is now a larger square, colored bright yellow when marked as selected.
+
+### Changed
+
+- README and `docs/forensis-cli.1` updated to the new `recover` syntax.
+- **TUI recovery highlight**: the selected row in the recovery candidate and
+  category lists no longer uses a white background; the highlight only adds
+  bold, keeping each item's own color. Deleted candidates are shown in red
+  and turn light blue (the on-disk file color) once recovered.
+
 ## [0.4.0] - 2026-09-14
 
 ### Fixed

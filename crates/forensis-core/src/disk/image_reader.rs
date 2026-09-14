@@ -2,6 +2,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 use crate::error::ForensisError;
 use crate::result::Result;
 use crate::traits::Readable;
@@ -83,7 +84,7 @@ fn block_device_size(path: &Path) -> Result<u64> {
 fn block_device_size(path: &Path) -> Result<u64> {
     let mut file = File::open(path)?;
 
-    file.seek(SeekFrom::End(0))
+    Ok(file.seek(SeekFrom::End(0))?)
 }
 
 impl Readable for ImageReader {

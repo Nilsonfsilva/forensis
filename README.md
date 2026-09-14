@@ -142,11 +142,13 @@ forensis tree disk.img
 forensis tree disk.img /path/inside/filesystem
 ```
 
-### Recover deleted objects
+### Recover forensic objects
 
 ```sh
-forensis recover deleted disk.img --output /dest
-forensis recover all disk.img --output /dest
+forensis recover disk.img                        # asks category, then output
+forensis recover disk.img --category deleted
+forensis recover disk.img --category file --output /dest
+forensis recover disk.img --category all --output /dest
 ```
 
 When inspecting a raw device, Forensis lists the block device, its

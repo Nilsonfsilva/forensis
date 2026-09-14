@@ -415,7 +415,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "forensis-app"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "forensis-core",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "forensis-cli"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "forensis-core"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "forensis-tui"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "crossterm",

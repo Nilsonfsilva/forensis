@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 
@@ -295,6 +295,7 @@ enum SourceMode {
     Selecting,
     Browsing,
     Inspecting,
+    RecoveryCategory,
     Recovery,
     RecoveryDetails,
     RecoverySave,
@@ -526,6 +527,9 @@ struct AppState {
     investigation_progress: Option<ProgressEvent>,
 
     recovery: Option<RecoveryState>,
+    recovery_category_selected: usize,
+
+    confirm_exit: bool,
 
     status: String,
 }
@@ -548,6 +552,8 @@ impl AppState {
             pending_investigation: None,
             investigation_progress: None,
             recovery: None,
+            recovery_category_selected: 0,
+            confirm_exit: false,
             status: "No evidence source selected.".to_string(),
         }
     }
@@ -690,8 +696,24 @@ where
             continue;
         }
 
+        if app.confirm_exit {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => break,
+
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.confirm_exit = false;
+                }
+
+                _ => {}
+            }
+
+            continue;
+        }
+
         if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-            break;
+            app.confirm_exit = true;
+
+            continue;
         }
 
         if key.code == KeyCode::Esc {
@@ -716,8 +738,16 @@ where
                     continue;
                 }
 
+                SourceMode::RecoveryCategory => {
+                    app.source_mode = SourceMode::Inspecting;
+                    app.status = "Returned to investigation.".to_string();
+                    continue;
+                }
+
                 SourceMode::Selecting | SourceMode::Browsing | SourceMode::Inspecting => {
-                    break;
+                    app.confirm_exit = true;
+
+                    continue;
                 }
             }
         }
@@ -733,6 +763,10 @@ where
 
             SourceMode::Inspecting => {
                 handle_inspection(app, key.code)?;
+            }
+
+            SourceMode::RecoveryCategory => {
+                handle_recovery_category(app, key.code)?;
             }
 
             SourceMode::Recovery => {
@@ -885,7 +919,10 @@ fn handle_inspection(app: &mut AppState, key: KeyCode) -> Result<()> {
         }
 
         KeyCode::Char('r') | KeyCode::Char('R') => {
-            start_recovery(app);
+            app.recovery_category_selected = 0;
+            app.source_mode = SourceMode::RecoveryCategory;
+            app.status = "Choose the recovery category.".to_string();
+
             return Ok(());
         }
 
@@ -905,7 +942,7 @@ fn handle_inspection(app: &mut AppState, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-fn start_recovery(app: &mut AppState) {
+fn start_recovery(app: &mut AppState, filter: RecoveryFilter) {
     let ticket = match next_recovery_ticket() {
         Ok(ticket) => ticket,
         Err(error) => {
@@ -948,7 +985,7 @@ fn start_recovery(app: &mut AppState) {
             .map(|entry| entry.identity.path.clone())
             .unwrap_or_else(|| "/".to_string());
 
-        let candidates = collect_recoverable_entries(model, scope_parent, RecoveryFilter::Deleted);
+        let candidates = collect_recoverable_entries(model, scope_parent, filter);
 
         (scope_parent, scope_path, candidates)
     };
@@ -958,24 +995,65 @@ fn start_recovery(app: &mut AppState) {
     app.recovery = Some(RecoveryState::new(
         ticket,
         scope_path.clone(),
-        RecoveryFilter::Deleted,
+        filter,
         candidates,
     ));
 
     app.source_mode = SourceMode::Recovery;
     app.focus = Focus::Filesystem;
 
+    let scope_name = filter_display_name(filter);
+
     app.status = if candidate_count == 0 {
         format!(
-            "No deleted files found recursively under {}. Press F to change the filter.",
-            scope_path
+            "No {} files found recursively under {}. Press F to change the filter.",
+            scope_name, scope_path
         )
     } else {
         format!(
-            "{} deleted file(s) found recursively under {}.",
-            candidate_count, scope_path
+            "{} {} file(s) found recursively under {}.",
+            candidate_count, scope_name, scope_path
         )
     };
+}
+
+fn recovery_categories() -> [RecoveryFilter; 3] {
+    [
+        RecoveryFilter::Normal,
+        RecoveryFilter::Deleted,
+        RecoveryFilter::All,
+    ]
+}
+
+fn handle_recovery_category(app: &mut AppState, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.recovery_category_selected > 0 {
+                app.recovery_category_selected -= 1;
+            }
+        }
+
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.recovery_category_selected + 1 < recovery_categories().len() {
+                app.recovery_category_selected += 1;
+            }
+        }
+
+        KeyCode::Enter | KeyCode::Right => {
+            let filter = recovery_categories()[app.recovery_category_selected];
+
+            start_recovery(app, filter);
+        }
+
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            app.source_mode = SourceMode::Inspecting;
+            app.status = "Returned to investigation.".to_string();
+        }
+
+        _ => {}
+    }
+
+    Ok(())
 }
 
 fn cycle_recovery_filter(app: &mut AppState) {
@@ -1471,6 +1549,11 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &AppState) {
             draw_recovery_save(frame, app, vertical[2]);
         }
 
+        SourceMode::RecoveryCategory => {
+            draw_recovery_category_context(frame, app, vertical[1]);
+            draw_recovery_category(frame, app, vertical[2]);
+        }
+
         SourceMode::Selecting | SourceMode::Browsing | SourceMode::Inspecting => {
             draw_source_area(frame, app, vertical[1]);
             draw_inspection_panels(frame, app, vertical[2]);
@@ -1478,6 +1561,10 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &AppState) {
     }
 
     draw_footer(frame, app, vertical[3]);
+
+    if app.confirm_exit {
+        draw_exit_confirmation(frame);
+    }
 }
 
 fn draw_header(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {
@@ -1537,7 +1624,10 @@ fn draw_source_area(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::l
             draw_browser_selection(frame, app, body[0], body[1]);
         }
 
-        SourceMode::Recovery | SourceMode::RecoveryDetails | SourceMode::RecoverySave => {}
+        SourceMode::Recovery
+        | SourceMode::RecoveryDetails
+        | SourceMode::RecoverySave
+        | SourceMode::RecoveryCategory => {}
     }
 }
 
@@ -1827,6 +1917,138 @@ fn draw_recovery_context(frame: &mut ratatui::Frame, app: &AppState, area: ratat
     frame.render_widget(widget, area);
 }
 
+fn draw_recovery_category_context(
+    frame: &mut ratatui::Frame,
+    app: &AppState,
+    area: ratatui::layout::Rect,
+) {
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            "RECOVERY",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from("Choose which category of files to recover:"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.status.clone(),
+            Style::default().fg(Color::Yellow),
+        )]),
+    ];
+
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Green))
+            .title(" Recovery Category "),
+    );
+
+    frame.render_widget(widget, area);
+}
+
+fn draw_recovery_category(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {
+    let options = [
+        ("FILE", RecoveryFilter::Normal, Color::Blue),
+        ("DELETED", RecoveryFilter::Deleted, Color::Red),
+        ("All", RecoveryFilter::All, Color::LightYellow),
+    ];
+
+    let mut items = Vec::new();
+
+    for (index, (name, _, color)) in options.iter().enumerate() {
+        let marker = if index == app.recovery_category_selected {
+            "➤ "
+        } else {
+            "   "
+        };
+
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            format!("{}{}", marker, name),
+            Style::default().fg(*color),
+        )])));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" Recovery Category "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    let mut list_state = ListState::default();
+
+    list_state.select(Some(app.recovery_category_selected));
+
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn draw_exit_confirmation(frame: &mut ratatui::Frame) {
+    let area = centered_rect(48, 24, frame.area());
+
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            "Exit Forensis",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from("Do you want to close Forensis?"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Press Y to close Forensis, N to continue.",
+            Style::default().fg(Color::Yellow),
+        )]),
+        Line::from(vec![Span::styled(
+            "(Y = Yes, N = No)",
+            Style::default().fg(Color::Gray),
+        )]),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(" Confirm Exit "),
+        );
+
+    frame.render_widget(Clear, area);
+
+    frame.render_widget(paragraph, area);
+}
+
+fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    area: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+
+    horizontal[1]
+}
+
 fn draw_recovery_panels(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -1842,25 +2064,30 @@ fn draw_recovery_panels(frame: &mut ratatui::Frame, app: &AppState, area: ratatu
 
     for item in &recovery.candidates {
         let object_id = item.entry.identity.object_id;
+
         let selected = recovery.selected_ids.contains(&object_id);
 
-        let marker = if selected { "☑ " } else { "☐ " };
+        let (marker, marker_color) = if selected {
+            ("■ ", Color::LightYellow)
+        } else {
+            ("□ ", Color::Gray)
+        };
 
         let (status_marker, color) = match item.status {
-            RecoveryItemStatus::Recovered => ("🟢 ", Color::Green),
+            RecoveryItemStatus::Recovered => ("🟢 ", Color::LightBlue),
             RecoveryItemStatus::Failed => ("🔴 ", Color::Red),
-            RecoveryItemStatus::Pending => ("⚪ ", Color::White),
+            RecoveryItemStatus::Pending => ("⚪ ", entry_color(&item.entry)),
         };
 
         let text = format!(
-            "{}{}{}  {}",
-            marker, status_marker, item.entry.identity.name, object_id
+            "{}{}  {}",
+            status_marker, item.entry.identity.name, object_id
         );
 
-        items.push(ListItem::new(Line::from(vec![Span::styled(
-            text,
-            Style::default().fg(color),
-        )])));
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(marker, Style::default().fg(marker_color)),
+            Span::styled(text, Style::default().fg(color)),
+        ])));
     }
 
     let title = format!(
@@ -1875,12 +2102,7 @@ fn draw_recovery_panels(frame: &mut ratatui::Frame, app: &AppState, area: ratatu
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(title),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
         .highlight_symbol("➤ ");
 
     let mut list_state = ListState::default();
@@ -1921,9 +2143,9 @@ fn build_recovery_item_details(
     };
 
     let status_color = match item.status {
-        RecoveryItemStatus::Recovered => Color::Green,
+        RecoveryItemStatus::Recovered => Color::LightBlue,
         RecoveryItemStatus::Failed => Color::Red,
-        RecoveryItemStatus::Pending => Color::White,
+        RecoveryItemStatus::Pending => Color::Red,
     };
 
     let selected = if recovery
@@ -2415,6 +2637,30 @@ fn draw_loaded_inspection(
 
 fn draw_footer(frame: &mut ratatui::Frame, app: &AppState, area: ratatui::layout::Rect) {
     let footer = match app.source_mode {
+        SourceMode::RecoveryCategory => Paragraph::new(Line::from(vec![
+            Span::styled(
+                "↑↓ ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Navigate   ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Enter ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Select Category   ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "Esc ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Back", Style::default().fg(Color::Gray)),
+        ])),
+
         SourceMode::Selecting => Paragraph::new(Line::from(vec![
             Span::styled(
                 "↑↓ ",

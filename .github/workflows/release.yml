@@ -25,21 +25,22 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
-      - run: cargo build --release --bin forensis --bin forensis-tui
+      - run: cargo build --release --target ${{ matrix.target }} --bin forensis --bin forensis-tui
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p dist
-          cp target/release/forensis target/release/forensis-tui \
+          cp target/${{ matrix.target }}/release/forensis \
+             target/${{ matrix.target }}/release/forensis-tui \
              LICENSE README.md docs/forensis-cli.1 dist/
           tar -C dist -czf forensis-${{ matrix.target }}.tar.gz .
 
@@ -48,14 +49,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/forensis.exe dist/
-          Copy-Item target/release/forensis-tui.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/forensis.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/forensis-tui.exe dist/
           Copy-Item LICENSE dist/
           Copy-Item README.md dist/
           Copy-Item docs/forensis-cli.1 dist/
           Compress-Archive -Path dist/* -DestinationPath forensis-${{ matrix.target }}.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: forensis-${{ matrix.target }}
           path: forensis-${{ matrix.target }}.*
@@ -66,7 +67,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
